@@ -31,7 +31,7 @@ This tool will **automatically identify differential metabolic states**, helping
 
 Example:
 
-| Gene    | GSM1594219 | GSM1594220 | GSM1594221 |
+|         | GSM1594219 | GSM1594220 | GSM1594221 |
 |---------|------------|------------|------------|
 | EEF1A1  | 13.78      | 13.61      | 14.04      |
 | GAPDH   | 11.08      | 10.18      | 10.34      |
@@ -88,6 +88,6 @@ meta <- me_pathwayanalysis(
 
 ## 📂 Available Gene Sets
 
-- **subsystem**: 134 manually curated metabolism pathways  
+- **subsystem**: 134 metabolism-related gene sets
 - **metabolite**: 3,673 metabolite-associated gene sets  
 
