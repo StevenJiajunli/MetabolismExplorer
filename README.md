@@ -6,16 +6,16 @@
 
 
 
-MetabolismExplorer is a powerful tool designed for high-throughput metabolic state analysis.
+# 🌿 **Welcome to MetabolismExplorer!**
 
-🔍 We have curated:
+📦 **MetabolismExplorer** is a powerful tool designed for high-throughput metabolic state analysis.
 
-134 🧬 metabolism-related gene sets
+🔍 We have curated:  
+- **134** 🧬 *metabolism-related gene sets*  
+- **3,673** 💥 *metabolite-associated gene sets*
 
-3,673 💥 metabolite-associated gene sets
+🧪 **What you need:**  
+Just provide your **expression matrix** and **sample classification**.
 
-🧪 What you need:
-Just provide your expression matrix and sample classification.
-
-🚀 What you get:
-The tool will automatically identify differential metabolic states, helping you uncover key biological insights and guide your downstream research with ease and precision.
+🚀 **What you get:**  
+The tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
