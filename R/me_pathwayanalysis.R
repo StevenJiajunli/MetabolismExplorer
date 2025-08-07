@@ -12,10 +12,7 @@
 #' @export
 #'
 #' @examples me_pathwayanalysis(input, geneset = subsystem, set.min = 5, set.max = 1000)
-me_pathwayanalysis <- function(input = diff,
-                               geneset = NULL,
-                               set.min = 5,
-                               set.max = 1000) {
+
 
   me_pathwayanalysis <- function(input = diff,
                                geneset = NULL,
