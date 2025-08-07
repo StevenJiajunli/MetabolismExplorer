@@ -1,0 +1,3683 @@
+
+# 10X数据读入==============================================================
+
+read10x_all <- function(path = path,
+                        merge = T) {
+  library(Seurat)
+  
+  filename <-  list.files(path)
+  alldata <- list()
+  
+  # 循环读取 ----------
+  
+  for (i in filename) {
+    
+    data <- Read10X(paste0(path, "/", i))
+    # data <- data[["Gene Expression"]]
+    data <- CreateSeuratObject(data)
+    data$sample <- i
+    
+    #给细胞barcode加个前缀
+    
+    data <- RenameCells(data, add.cell.id = i)
+    alldata <- c(alldata, list(data))
+  }
+  
+  # 合并seurat对象 ----------
+  
+  if (merge == T) {
+    
+    datafilt <- alldata[[1]]
+    for (i in 2:length(alldata)) {
+      data <- alldata[[i]]
+      datafilt <- merge(datafilt, data)}
+    
+  } else {
+    
+    datafilt <- alldata
+    names(datafilt) <- filename
+    
+  }
+  
+  datafilt
+}
+
+
+
+# 质控函数 =====================================================================
+
+# 表达数据画质控图 ====================
+
+qc_plot <- function(data = data,
+                    species = "human") {
+  library(Seurat)
+  counts <- GetAssayData(object = data, slot = "counts")
+  
+  # 计算线粒体和核糖体比例
+  
+  if (species == "human") {
+    
+    mt.genes <- grep(pattern = "^MT-", x = rownames(data), value = TRUE)
+    rb.genes <- grep(pattern = "^RP[SL]", x = rownames(data), value = TRUE)
+    
+  } else if (species == "mouse") {
+    
+    mt.genes <- grep(pattern = "^mt-", x = rownames(data), value = TRUE)
+    rb.genes <- grep(pattern = "^Rp[sl]", x = rownames(data), value = TRUE)
+    
+  }
+  
+  data$percent_mito <- colSums(counts[mt.genes,])/Matrix::colSums(counts)*100
+  data$percent_ribo <- colSums(counts[rb.genes,])/Matrix::colSums(counts)*100
+  
+  # 结果可视化
+  
+  par(mfrow=c(2,2))
+  
+  hist(data$nFeature_RNA,breaks=100,prob=TRUE)
+  hist(data$nCount_RNA,breaks=100,prob=TRUE)
+  
+  hist(data$percent_mito,breaks=100,prob=TRUE)
+  hist(data$percent_ribo,breaks=100,prob=TRUE)
+}
+
+
+# 过滤函数 ====================
+
+qc_filter <- function(data = data, 
+                      nFeature_dn = 500,
+                      nFeature_up = 5000,
+                      nCount_dn = 5000,
+                      nCount_up = 50000,
+                      mito_up = 20,
+                      ribo_dn = 5,
+                      ribo_up = 50,
+                      gene_filter = 3,
+                      species = "human") {
+  library(Seurat)
+  counts <- GetAssayData(object = data, slot = "counts")
+  
+  # 计算线粒体和核糖体比例
+  
+  if (species == "human") {
+    
+    mt.genes <- grep(pattern = "^MT-", x = rownames(data), value = TRUE)
+    rb.genes <- grep(pattern = "^RP[SL]", x = rownames(data), value = TRUE)
+    
+  } else if (species == "mouse") {
+    
+    mt.genes <- grep(pattern = "^mt-", x = rownames(data), value = TRUE)
+    rb.genes <- grep(pattern = "^Rp[sl]", x = rownames(data), value = TRUE)
+    
+  }
+  
+  data$percent_mito <- colSums(counts[mt.genes,])/Matrix::colSums(counts)*100
+  data$percent_ribo <- colSums(counts[rb.genes,])/Matrix::colSums(counts)*100
+  
+  # 排除表达基因的数量少于500或大于5000的细胞
+  
+  filter_cell <- colnames(data)[data$nFeature_RNA > nFeature_dn &
+                                  data$nFeature_RNA < nFeature_up &
+                                  data$nCount_RNA > nCount_dn &
+                                  data$nCount_RNA < nCount_up &
+                                  data$percent_mito < mito_up &
+                                  data$percent_ribo > ribo_dn &
+                                  data$percent_ribo < ribo_up]
+  
+  # 排除在少于等于3个细胞中表达的基因
+  
+  filter_gene <- rownames(data)[rowSums(counts != 0) > gene_filter]
+  
+  # 得到过滤后数据
+  
+  data[filter_gene, filter_cell]
+}
+
+
+
+# 去除Doublets ====================
+
+doublet_rm <- function(datafilt = datafilt,
+                       prop_doublet = 0.075) {
+  
+  library(DoubletFinder)
+  library(Seurat)
+  library(dplyr)
+  options(future.globals.maxSize = 8 * 1024^3)
+  
+  datafilt <- autocluster(datafilt, nfeatures = 2000, ndim = 15,
+                          neigh = 20, dist = 0.5, res = 0.5)
+  
+  # 寻找最优pK值
+  
+  sweep.res.list <- paramSweep_v3(datafilt, PCs = 1:20)
+  sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)  
+  bcmvn <- find.pK(sweep.stats)
+  
+  pK_bcmvn <- bcmvn$pK[which.max(bcmvn$BCmetric)] %>%
+    as.character() %>% as.numeric()
+  
+  # 排除不能检出的同源doublets，优化期望的doublets数量
+  
+  homotypic.prop <- modelHomotypic(datafilt$seurat_clusters)
+  
+  nExp_poi <- round(prop_doublet*ncol(datafilt)) 
+  nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+  
+  # 使用确定好的参数鉴定doublets
+  
+  datafilt <- doubletFinder_v3(datafilt, PCs = 1:20, pN = 0.25,
+                               pK = pK_bcmvn, reuse.pANN = F,
+                               nExp = nExp_poi.adj)
+  
+  names(datafilt@meta.data) <- gsub("DF.classifications.*",
+                                    "DF.classifications",
+                                    colnames(datafilt@meta.data))
+  
+  infodata <- data.frame(id = rownames(datafilt@meta.data),
+                         DFclass = datafilt@meta.data[["DF.classifications"]])
+  
+  # 将结果整合到seurat对象
+  
+  rownames(infodata) <- NULL
+  infodata <- column_to_rownames(infodata, var = "id")
+  datafilt <- AddMetaData(datafilt, infodata)
+  datafilt
+}
+
+
+
+# 自动降维 =====================================================================
+
+autoumap <- function(datafilt, nfeatures = 2000, ndim = 15,
+                     neigh = 20, dist = 1){
+  library(Seurat)
+  
+  # 测序深度标准化
+  
+  datafilt <- NormalizeData(datafilt, scale.factor = 10000,
+                            normalization.method = "LogNormalize")
+  # 变异度高的基因
+  
+  datafilt <- FindVariableFeatures(datafilt, nfeatures = nfeatures, 
+                                   selection.method = "vst")
+  # scale标准化
+  
+  datafilt <- ScaleData(datafilt, features = VariableFeatures(datafilt))
+  
+  # PCA分析
+  
+  datafilt <- RunPCA(datafilt, assay = 'RNA', slot = 'scale.data')
+  
+  # 重新降维
+  
+  datafilt <- RunUMAP(datafilt, dims = 1:ndim,
+                      n.neighbors = neigh, min.dist = dist, 
+                      reduction = "pca", reduction.name = "umap")
+  return(datafilt)
+}
+
+
+
+# 自动聚类 =====================================================================
+
+autocluster <- function(datafilt, nfeatures = 2000,
+                        ndim = 15, neigh = 20,
+                        dist = 0.5, res = 0.5,
+                        batch.hm = FALSE,
+                        batch.sl = FALSE,
+                        batch.id = "sample") {
+  library(Seurat)
+  
+  # 测序深度标准化
+  
+  datafilt <- NormalizeData(datafilt, scale.factor = 10000,
+                            normalization.method = "LogNormalize")
+  # 变异度高的基因
+  
+  datafilt <- FindVariableFeatures(datafilt, nfeatures = nfeatures, 
+                                   selection.method = "vst")
+  # scale标准化
+  
+  if (batch.sl == TRUE) {
+    plan(multisession, workers = 4)
+    options(future.globals.maxSize = 50 * 1024^3)
+    datafilt <- ScaleData(datafilt, features = VariableFeatures(datafilt),
+                          vars.to.regress = batch.id)
+    plan(sequential)
+    
+  } else {
+    plan(multisession, workers = 4)
+    options(future.globals.maxSize = 50 * 1024^3)
+    datafilt <- ScaleData(datafilt, features = VariableFeatures(datafilt))
+    plan(sequential)
+  }
+  
+  # PCA分析
+  
+  datafilt <- RunPCA(datafilt, assay = 'RNA', slot = 'scale.data')
+  
+  # 分群和降维
+  
+  if (batch.hm == TRUE) {
+    
+    library(harmony)
+    datafilt <- RunHarmony(datafilt, group.by.vars = batch.id,
+                           reduction = "pca", dims.use = 1:50,
+                           assay.use = "RNA")
+    
+    datafilt <- FindNeighbors(datafilt, k.param = neigh,
+                              dims = 1:ndim, reduction = "harmony")
+    
+    datafilt <- FindClusters(datafilt, resolution = res, n.iter = 50)
+    datafilt <- RunUMAP(datafilt, dims = 1:ndim,
+                        n.neighbors = neigh, min.dist = dist, 
+                        reduction = "harmony", reduction.name = "umap_harmony")
+  } else {
+    
+    datafilt <- FindNeighbors(datafilt, k.param = neigh,
+                              dims = 1:ndim, reduction = "pca")
+    
+    datafilt <- FindClusters(datafilt, resolution = res, n.iter = 50)
+    datafilt <- RunUMAP(datafilt, dims = 1:ndim,
+                        n.neighbors = neigh, min.dist = dist, 
+                        reduction = "pca", reduction.name = "umap")
+  }
+  
+  return(datafilt)
+}
+
+
+
+# 计算普通情况的seurat分数 =====================================================
+
+seurat_score <- function(data = data,
+                         source = path,
+                         geneset = "msigdb_hallmark",
+                         min.sz = 10) {
+  
+  library(Seurat)
+  library(tibble)
+  
+  # 处理注释信息 ----------
+  
+  if (is.null(geneset)) {
+    
+    if (is.list(source)) {
+      
+      sig_list = source
+      
+    } else {
+      
+      sig_list <- read.table(source, sep = ",", header = F,
+                             row.names = 1, na.strings = "")
+      # 长宽转换
+      
+      sig_list <- lapply(rownames(sig_list), function(i){
+        subdata <- t(sig_list[i,])[,1]
+        subdata <- data.frame(term = i, gene = subdata)
+      })
+      
+      sig_list <- do.call(rbind, sig_list)
+      sig_list <- na.omit(sig_list)
+      
+      # 列表转换
+      
+      sig_list <- split(sig_list$gene, sig_list$term)
+      
+    }
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- split(genesets$value, genesets$L1)
+    
+  }
+  
+  # sig list过滤 ----------
+  
+  sig_list <- lapply(sig_list, function(i){
+    if (length(i) > min.sz) {i} else {NA}})
+  
+  sig_list <- sig_list[!is.na(sig_list)]
+  
+  # signature分数计算 ----------
+  
+  data <- AddModuleScore(data, sig_list, nbin = 30, 
+                         ctrl = 100, name = names(sig_list))
+  
+  # 注释名字修改 ----------
+  
+  name <- colnames(data@meta.data)
+  position <- length(name)-length(names(sig_list)) + 1
+  colnames(data@meta.data)[position:length(name)] <- names(sig_list)
+  
+  # 提取signature分数 ----------
+  
+  sig <- data@meta.data
+  sig <- sig[,position:length(name)]
+}
+
+
+
+# 计算seurat分数时手动调整人和鼠 ===============================================
+
+seurat_score_mouse <- function(data = data,
+                               source = path,
+                               geneset = "msigdb_hallmark",
+                               min.sz = 10,
+                               species = "human",
+                               mouse_info = info) {
+  
+  library(Seurat)
+  library(tibble)
+  
+  # 进行id转换 ----------
+  
+  if (species == "mouse") {
+    
+    matrix_rowname_replace <- function(data = data,
+                                       info = info,
+                                       rm.uncommon = TRUE) {
+      library(data.table)
+      library(tibble)
+      library(plyr)
+      
+      names(info)[1:2] <- c("rowname", "newname")
+      info <- na.omit(info)
+      
+      if (rm.uncommon == TRUE) {
+        common <- intersect(rownames(data), info$rowname)
+        data <- data[rownames(data) %in% common,]
+        info <- info[info$rowname %in% common,]
+      }
+      
+      rownames(data) <- mapvalues(rownames(data),
+                                  as.character(info$rowname),
+                                  as.character(info$newname))
+      data
+    }
+    
+    # 开始替换
+    
+    info <- read.table(mouse_info, sep = "\t", header = T, check.names = F)
+    matrix <- GetAssayData(data, slot = "data", assay = "RNA")
+    matrix <- matrix_rowname_replace(data = matrix,
+                                     info = info,
+                                     rm.uncommon = TRUE)
+    
+    new_data <- CreateSeuratObject(matrix)
+    new_data@meta.data <- data@meta.data
+    data <- new_data
+  }
+  
+  # 处理注释信息 ----------
+  
+  if (is.null(geneset)) {
+    
+    sig_list <- read.table(source, sep = ",", header = F,
+                           row.names = 1, na.strings = "")
+    # 长宽转换
+    
+    sig_list <- lapply(rownames(sig_list), function(i){
+      subdata <- t(sig_list[i,])[,1]
+      subdata <- data.frame(term = i, gene = subdata)
+    })
+    
+    sig_list <- do.call(rbind, sig_list)
+    sig_list <- na.omit(sig_list)
+    
+    # 列表转换
+    
+    sig_list <- split(sig_list$gene, sig_list$term)
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- split(genesets$value, genesets$L1)
+    
+  }
+  
+  # sig list过滤 ----------
+  
+  sig_list <- lapply(sig_list, function(i){
+    if (length(i) > min.sz) {i} else {NA}})
+  
+  sig_list <- sig_list[!is.na(sig_list)]
+  
+  # signature分数计算 ----------
+  
+  data <- AddModuleScore(data, sig_list, nbin = 30, 
+                         ctrl = 100, name = names(sig_list))
+  
+  # 注释名字修改 ----------
+  
+  name <- colnames(data@meta.data)
+  position <- length(name)-length(names(sig_list)) + 1
+  colnames(data@meta.data)[position:length(name)] <- names(sig_list)
+  
+  # 提取signature分数 ----------
+  
+  sig <- data@meta.data
+  sig <- sig[,position:length(name)]
+}
+
+
+
+# dimplot ======================================================================
+
+dimplot_new <- function(data = datafilt,
+                        reduction = "umap",
+                        pt.size = 1, label = T,
+                        group.by = c("seurat_clusters")) {
+  
+  library(Seurat)
+  
+  # 设定颜色
+  
+  info <- data@meta.data
+  number <- length(unique(info[,group.by]))
+  
+  if (number < 17) {
+    col <- c("#A6D719", "#176EBF", "#00A8DE", "#AEE0E8",
+             "#00A9A3", "#FBD324", "#F28A24", "#A52828",
+             "#A37CB7", "#F2D7EE", "#CD6981", "#FBD0C0",
+             "#F15E4C", "#ECB2C8", "#B2DBBF", "#CCDAD1")
+  } else {
+    col <- c("#B8E3EA", "#5CB3DA", "#0070B2", "#FBDD7E", "#F7AE24", "#FF7149", 
+             "#F2D7EE", "#A37CB7", "#A231A1", "#ECB2C8", "#E93B8C", "#B91372", 
+             "#FF9F99", "#F15E4C", "#DA1735", "#CDE391", "#8BBE53", "#679436", 
+             "#98D4C6", "#00A385", "#067D69", "#B2DBBF", "#028090", "#114B5F", 
+             "#FBD0C0", "#CD6981", "#A23E48", "#CCDAD1", "#9CAEA9", "#788585")
+    col <- colorRampPalette(col)(number)
+  }
+  
+  # 开始画图
+  
+  DimPlot(data, pt.size = pt.size, label = label, repel = T, 
+          raster = TRUE, label.size = 3.5, reduction = reduction,
+          group.by = group.by) + 
+    scale_color_manual(values = c(col)) + 
+    
+    theme_bw() +
+    theme(legend.key.size = unit(0.5,'cm'),
+          legend.text = element_text(size = 12),
+          legend.title = element_blank(),
+          panel.grid = element_blank(), # 删去网格线
+          axis.ticks = element_blank(), # 删去刻度线
+          axis.text = element_blank(), # 删去刻度标签
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) +   
+    
+    labs(x = 'UMAP1',y= 'UMAP2',title = '')
+}
+
+
+# 导dimplot中的figure ====================
+
+export_dimplot <- function(all_plots = all_plots,
+                           ncol = 3, dpi = 300,
+                           output = name) {
+  
+  library(cowplot)
+  
+  if (ncol == 2) {
+    
+    height = round(length(all_plots)/2 + 0.3, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 2)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 12, height = height, limitsize = FALSE)
+    
+  } else if (ncol == 3) {
+    
+    height = round(length(all_plots)/3 + 0.3, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 3)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 17.5, height = height, limitsize = FALSE)
+    
+  } else if (ncol == 5) {
+    
+    height = round(length(all_plots)/5 + 0.3, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 5)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 27.5, height = height, limitsize = FALSE)
+  }
+}
+
+
+
+# featureplot ==================================================================
+
+featureplot_new <- function(data = datafilt,
+                            reduction = "umap",
+                            pt.size = 1, 
+                            color = "parula",
+                            features = select,
+                            raster = NULL,
+                            outlier.rm = F) {
+  library(Seurat)
+  
+  # 设定颜色
+  
+  if (color == "parula") {
+    col <- colorRampPalette(c("#352A87","#343EB1","#1558D9","#036CE0","#107AD9",
+                              "#1387D3","#0997D1","#06A4C9","#0CADBB","#23B4A9",
+                              "#43BB97","#6ABE83","#8FBF73","#AEBD66","#CBBB5B",
+                              "#E6B94F","#FDBE3C","#FBCF2C","#F5E21E","#F9FB0E"))(100)
+    
+  } else if (color == "kovesi") {
+    col <- colorRampPalette(c("#1B0084","#1B099A","#1C14AE","#1C20C0","#1F2DCE",
+                              "#233DD6","#2950CE","#2E68AB","#377989","#3F876A",
+                              "#46954D","#53A036","#65AB26","#7BB41A","#95BE16",
+                              "#AFC61C","#C6CE26","#DAD636","#EAE04E","#F1EC74",
+                              "#F8F7AF","#FFFFFF"))(100)
+    
+  } else if (color == "ocean.haline") {
+    col <- colorRampPalette(c("#2A186C","#2E1B87","#2B229F","#1D35A1","#11459A",
+                              "#0C5294","#115D8F","#19678C","#22718A","#2B7A89",
+                              "#328388","#388D88","#3E9886","#44A284","#4CAC80",
+                              "#55B67A","#62BF72","#73C869","#8AD060","#A4D75C",
+                              "#BEDC62","#D5E171","#EAE784","#FDEF9A"))(100)
+    
+  } else if (color == "ocean.dense") {
+    col <- colorRampPalette(c("#360E24","#5D1A58","#723692","#795CC3",
+                              "#7487E0", "#7EB0E4","#AAD2E3","#E6F1F1"))(100)
+    
+  } else if (color == "magma") {
+    col <- c(colorRampPalette(c(magma(323, begin = 0.15)[1]))(10),
+             magma(323, begin = 0.18))
+    
+  } else if (color == "white2blue") {
+    col <- colorRampPalette(c("#FBF4F8","#E5E0ED","#BFC6DD","#8CADCC",
+                              "#4E92BA","#1871A8","#085889","#003758"))(100)
+    
+  } else if (color == "blue2red") {
+    col <- colorRampPalette(c("#0070b2","#009bc7","#5ec7dd",
+                              "#b8e3ea","#f3f3f1","#fccdb9",
+                              "#f79676","#f15e4c","#da1735"))(100)
+    
+  } else if (color == "rainbow") {
+    col <- colorRampPalette(c("#343391","#0064af","#0090cc","#00b6db","#01b7c2",
+                              "#53c0a3","#8dcb8a","#bbd967","#fbd324","#f6bd25",
+                              "#f4a02e","#ed6f32","#ea5c2e","#d5452f","#c02e2f",
+                              "#8b2a21"))(100)
+  }
+  
+  # 开始画图
+  
+  if (length(features) > 1) {
+    
+    lapply(features, function(i){
+      
+      if (outlier.rm == T) {
+        input <- data@meta.data[,i]
+        thres <- quantile(input, probs = c(0.05, 0.95))
+        input[input < thres[1]] <- thres[1]
+        input[input > thres[2]] <- thres[2]
+        data@meta.data[,i] <- input}
+      
+      FeaturePlot(data, features = i, cols = col,
+                  reduction = reduction, ncol = 1,
+                  pt.size = pt.size, label = F, order = T, raster = raster) + 
+        theme_bw() +
+        theme(panel.grid = element_blank(), # 删去网格线
+              axis.ticks = element_blank(), # 删去刻度线
+              axis.text = element_blank(), # 删去刻度标签
+              axis.title = element_text(colour = "black", size = 15),
+              plot.title = element_text(size = 17),
+              panel.border = element_rect(fill = NA, color = "black", linewidth = 1),
+              legend.position = "right") +
+        
+        labs(x = 'UMAP1',y= 'UMAP2',title = '')
+    })
+    
+  } else {
+    
+    if (outlier.rm == T) {
+      input <- data@meta.data[,features]
+      thres <- quantile(input, probs = c(0.05, 0.95))
+      input[input < thres[1]] <- thres[1]
+      input[input > thres[2]] <- thres[2]
+      data@meta.data[,features] <- input}
+    
+    FeaturePlot(data, features = features, cols = col,
+                reduction = reduction, ncol = 1,
+                pt.size = pt.size, label = F, order = T, raster = raster) + 
+      theme_bw() +
+      theme(panel.grid = element_blank(), # 删去网格线
+            axis.ticks = element_blank(), # 删去刻度线
+            axis.text = element_blank(), # 删去刻度标签
+            axis.title = element_text(colour = "black", size = 15),
+            plot.title = element_text(size = 17),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1),
+            legend.position = "right") +
+      
+      labs(x = 'UMAP1',y= 'UMAP2',title = '')
+  }
+}
+
+
+# 导出featureplot中的figure ====================
+
+export_featureplot <- function(all_plots = all_plots,
+                               ncol = 3, dpi = 300,
+                               output = name) {
+  
+  library(cowplot)
+  
+  if (ncol == 2) {
+    
+    height = round(length(all_plots)/2 + 0.35, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 2)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 12, height = height, limitsize = FALSE)
+    
+  } else if (ncol == 3) {
+    
+    height = round(length(all_plots)/3 + 0.35, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 3)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 15, height = height, limitsize = FALSE)
+    
+  } else if (ncol == 5) {
+    
+    height = round(length(all_plots)/5 + 0.35, 0) * 5
+    all_plots <- plot_grid(plotlist = all_plots, ncol = 5)
+    
+    ggsave(output, all_plots, dpi = dpi,
+           width = 25, height = height, limitsize = FALSE)
+  }
+}
+
+
+
+# dotplot marker ===============================================================
+
+dotplot_marker <- function(data = datafilt,
+                           group.by = "cluster",
+                           marker = select,
+                           species = "human",
+                           width = 15,
+                           height = 6,
+                           output = name){
+  
+  library(Seurat)
+  library(ggpubr)
+  
+  # 设置marker
+  
+  if (is.null(species)) {
+    
+    gene_list <- marker
+    
+  } else if (species == "human") {
+    
+    Tcell = c("CD3D", "CD3E")
+    CD8T = c("CD8A", "CD8B")
+    CD4T = c("CD4")
+    Treg = c("FOXP3", "IL2RA", "IL7R")
+    NKcell = c("KLRD1", "NKG7", "NCAM1")
+    Bcell = c("CD19", "CD79A", "MS4A1")
+    Plasma = c("IGKC", "IGLC2", "TNFRSF17")
+    Macro = c("APOC1", "SPP1", "C1QC")
+    Mono = c("FCN1", "S100A8", "S100A9")
+    cDC = c("FCER1A", "CD207", "XCR1")
+    pDC = c("IL3RA", "LILRA4")
+    MAST = c("KIT", "MS4A2")
+    Neu = c("FCGR3B", "CEACAM8", "CSF3R")
+    Fibro = c("COL1A1", "COL1A2")
+    Endo = c("PECAM1", "VWF")
+    hepatocyte = c("ALB", "CYP3A4", "HNF4A")
+    biliary = c("EPCAM", "KRT7", "KRT19")
+    
+    gene_list <- list(Tcell = Tcell,
+                      CD8T = CD8T,
+                      CD4T = CD4T,
+                      Treg = Treg,
+                      NKcell = NKcell,
+                      Bcell = Bcell,
+                      Plasma = Plasma,
+                      Macro = Macro,
+                      Mono = Mono,
+                      cDC = cDC,
+                      pDC = pDC,
+                      MAST = MAST,
+                      Neu = Neu,
+                      Fibro = Fibro,
+                      Endo = Endo,
+                      hepatocyte = hepatocyte,
+                      biliary = biliary)
+    
+  } else if (species == "mouse") {
+    
+    Tcell = c("Cd3d", "Cd3e")
+    CD8T = c("Cd8a", "Cd8b1")
+    CD4T = c("Cd4")
+    Treg = c("Foxp3", "Il2ra", "Il7r")
+    NKcell = c("Klrd1", "Nkg7", "Ncam1")
+    Bcell = c("Cd19", "Cd79a", "Ms4a1")
+    Plasma = c("Igkc", "Tnfrsf17")
+    Macro = c("Apoc1", "Spp1", "C1qc")
+    Mono = c("S100a8", "S100a9")
+    cDC = c("Fcer1a", "Cd207", "Xcr1")
+    pDC = c("Il3ra", "Gm14548")
+    MAST = c("Kit", "Ms4a2")
+    Neu = c("Csf3r", "Fut4")
+    Fibro = c("Col1a1", "Col1a2")
+    Endo = c("Pecam1", "Vwf")
+    hepatocyte = c("Alb", "Cyp3a11", "Hnf4a")
+    biliary = c("Epcam", "Krt7", "Krt19")
+    
+    gene_list <- list(Tcell = Tcell,
+                      CD8T = CD8T,
+                      CD4T = CD4T,
+                      Treg = Treg,
+                      NKcell = NKcell,
+                      Bcell = Bcell,
+                      Plasma = Plasma,
+                      Macro = Macro,
+                      Mono = Mono,
+                      cDC = cDC,
+                      pDC = pDC,
+                      MAST = MAST,
+                      Neu = Neu,
+                      Fibro = Fibro,
+                      Endo = Endo,
+                      hepatocyte = hepatocyte,
+                      biliary = biliary)
+    
+  }
+  
+  # 设置颜色
+  
+  col <- colorRampPalette(c("#0070b2","#009bc7","#b8e3ea",
+                            "#f3f3f1","#fccdb9", "#f15e4c","#da1735"))(100)
+  
+  # 开始画图
+  
+  plot <- DotPlot(data, scale = T, col.min = -1,
+                  group.by = group.by, col.max = 1, features = gene_list) + 
+    scale_color_gradientn(colors = col) + 
+    theme_bw()+
+    theme(legend.position = "right", legend.box = "vertical",
+          legend.margin = margin(t = 0, unit='cm'),
+          panel.grid = element_blank(),
+          axis.text = element_text(color = "black", size = 12),
+          legend.text = element_text(size = 12,color = "black"),
+          legend.title = element_text(size = 12,color = "black")) + 
+    labs(x = '', y = '', title = '') + rotate_x_text(45)
+  
+  # 保存结果
+  
+  if (is.null(output)) {
+    plot
+  } else {
+    ggsave(output, plot, width = width, height = height)
+  }
+  
+}
+
+
+
+# featureplot marker ===========================================================
+
+featureplot_marker <- function(data = datafilt,
+                               reduction = "umap",
+                               pt.size = 0.5,
+                               outlier.rm = F,
+                               species = "human",
+                               output = name) {
+  library(Seurat)
+  
+  # 设定颜色
+  
+  col <- colorRampPalette(c("#0070b2","#009bc7","#5ec7dd",
+                            "#b8e3ea","#f3f3f1","#fccdb9",
+                            "#f79676","#f15e4c","#da1735"))(100)
+  
+  # 设定marker
+  
+  if (species == "human") {
+    
+    select <- c("CD3D", "CD3E", "CD8A", "CD8B", "CD4",
+                "FOXP3", "IL2RA", "IL7R", "KLRD1", "NKG7", "NCAM1",
+                "CD19", "CD79A", "MS4A1", "IGKC", "IGLC2", "TNFRSF17",
+                "APOC1", "SPP1", "C1QC", "FCN1", "S100A8", "S100A9",
+                "FCER1A", "CD207", "XCR1", "IL3RA", "LILRA4",
+                "KIT", "MS4A2", "FCGR3B", "CEACAM8", "CSF3R",
+                "COL1A1", "COL1A2", "PECAM1", "VWF",
+                "ALB", "CYP3A4", "HNF4A", "EPCAM", "KRT7", "KRT19")
+    
+  } else if (species == "mouse") {
+    
+    select <- c("Cd3d", "Cd3e", "Cd8a", "Cd8b1", "Cd4",
+                "Foxp3", "Il2ra", "Il7r", "Klrd1", "Nkg7", "Ncam1",
+                "Cd19", "Cd79a", "Ms4a1", "Igkc", "Tnfrsf17",
+                "Apoc1", "Spp1", "C1qc", "S100a8", "S100a9",
+                "Fcer1a", "Cd207", "Xcr1", "Il3ra", "Gm14548",
+                "Kit", "Ms4a2", "Csf3r", "Fut4", "Col1a1", "Col1a2",
+                "Pecam1", "Vwf", "Alb", "Cyp3a11", "Hnf4a",
+                "Epcam", "Krt7", "Krt19")
+  }
+  
+  # 只纳入common features
+  
+  select <- intersect(select, rownames(data))
+  
+  # 开始画图
+  
+  all_plots <- lapply(select, function(i){
+    
+    if (outlier.rm == T) {
+      input <- data@meta.data[,i]
+      thres <- quantile(input, probs = c(0.05, 0.95))
+      input[input < thres[1]] <- thres[1]
+      input[input > thres[2]] <- thres[2]
+      data@meta.data[,i] <- input}
+    
+    FeaturePlot(data, features = i, cols = col,
+                reduction = reduction, ncol = 1,
+                pt.size = pt.size, label = F, order = T) + 
+      theme_bw() +
+      theme(panel.grid = element_blank(), # 删去网格线
+            axis.ticks = element_blank(), # 删去刻度线
+            axis.text = element_blank(), # 删去刻度标签
+            axis.title = element_text(colour = "black", size = 15),
+            plot.title = element_text(size = 17),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1),
+            legend.position = "none") +
+      
+      labs(x = 'UMAP1', y = 'UMAP2', title = i)
+  })
+  
+  # 保存结果
+  
+  height = round(length(all_plots)/5 + 0.35, 0) * 5
+  all_plots <- plot_grid(plotlist = all_plots, ncol = 5)
+  
+  ggsave(output, all_plots, dpi = 300,
+         width = 25, height = height, limitsize = FALSE)
+}
+
+
+
+# Cell cycle ===================================================================
+
+cellcycle_seurat <- function(datafilt = datafilt) {
+  
+  library(Seurat)
+  library(sceasy)
+  library(tricycle)
+  library(tibble)
+  
+  # seurat注释cellcycle ----------
+  
+  datafilt <- CellCycleScoring(datafilt,
+                               s.features = cc.genes$s.genes,
+                               g2m.features = cc.genes$g2m.genes,
+                               set.ident = TRUE)
+  
+  datafilt$cyc_seu <- ifelse(datafilt$Phase == "G1",
+                             "non-cycling", "cycling")
+  
+  cyc_seu <- data.frame(id = colnames(datafilt),
+                        G2M_score = datafilt$G2M.Score,
+                        S_score = datafilt$S.Score,
+                        cyc_seu = datafilt$cyc_seu)
+  
+  # tricycle注释cellcycle ----------
+  
+  scedata <- convertFormat(datafilt, from = "seurat", to = "sce")
+  
+  # 开始计算
+  
+  scedata <- project_cycle_space(scedata,
+                                 gname.type = c("SYMBOL"), species = c( "human"))
+  scedata <- estimate_cycle_position(scedata)
+  
+  # 结果整理
+  
+  tricycle <- data.frame(id = colnames(scedata),
+                         tricycle = scedata$tricyclePosition / 3.1415926)
+  
+  tricycle$cyc_tri <- ifelse(tricycle$tricycle > 1.5 |
+                               tricycle$tricycle < 0.5, "non-cycling", "cycling")
+  tricycle <- tricycle[,-2]
+  
+  # ZZM方法 ----------
+  
+  select <- c("ZWINT", "E2F1", "FEN1", "FOXM1", "H2AFZ", "HMGB2",
+              "MCM2", "MCM3", "MCM4", "MCM5", "MCM6", "MKI67",
+              "MYBL2", "PCNA", "PLK1", "CCND1", "AURKA", "BUB1",
+              "TOP2A", "TYMS", "DEK", "CCNB1", "CCNE1")
+  
+  sig_list <- list(prolif_score = c(select))
+  
+  # signature分数计算
+  
+  data <- AddModuleScore(datafilt, sig_list, nbin = 30, 
+                         ctrl = 100, name = names(sig_list))
+  
+  # 提取signature分数
+  
+  prolif <- data@meta.data
+  prolif <- data.frame(id = rownames(prolif),
+                       prolif_score = prolif$prolif_score1)
+  
+  # 结果总结 ----------
+  
+  cycle <- merge(cyc_seu, tricycle, by = "id")
+  cycle <- merge(cycle, prolif, by = "id")
+  cycle <- column_to_rownames(cycle, var = "id")
+  cycle
+}
+
+
+# 计算prolif分数 ====================
+
+prolif_seurat <- function(datafilt = datafilt) {
+  
+  library(Seurat)
+  library(tibble)
+  
+  # 处理注释信息 ----------
+  
+  select <- c("ZWINT", "E2F1", "FEN1", "FOXM1", "H2AFZ", "HMGB2",
+              "MCM2", "MCM3", "MCM4", "MCM5", "MCM6", "MKI67",
+              "MYBL2", "PCNA", "PLK1", "CCND1", "AURKA", "BUB1",
+              "TOP2A", "TYMS", "DEK", "CCNB1", "CCNE1")
+  
+  sig_list <- list(prolif_score = c(select))
+  
+  # signature分数计算 ----------
+  
+  data <- AddModuleScore(datafilt, sig_list, nbin = 30, 
+                         ctrl = 100, name = names(sig_list))
+  
+  # 提取signature分数
+  
+  sig <- data@meta.data
+  sig <- data.frame(id = rownames(sig), prolif_score = sig$prolif_score1)
+  
+  # 整合数据
+  
+  sig <- column_to_rownames(sig, var = "id")
+  sig
+}
+
+
+
+# 差异分析 =====================================================================
+
+seurat_diffall <- function(datafilt = datafilt,
+                           group.by = "seurat_clusters",
+                           assay = "RNA",
+                           min.pct = 0.25,
+                           thres.fc = 0.25) {
+  library(Seurat)
+  library(future)
+  
+  # 设定差异分析的分组
+  
+  datafilt <- SetIdent(datafilt, value = group.by)
+  
+  # 并行运算
+  
+  plan(multisession, workers = 4)
+  options(future.globals.maxSize = 3000*1024^2)
+  
+  diff <- FindAllMarkers(datafilt, test.use = 'LR',
+                         assay = assay, slot = 'data', 
+                         min.pct = min.pct,
+                         logfc.threshold = thres.fc)
+  plan(sequential)
+  
+  # 整理结果
+  
+  rownames(diff) <- NULL
+  data.frame(gene = diff$gene,
+             cluster = diff$cluster,
+             logfc = diff$avg_log2FC,
+             pctfc = diff$pct.1 - diff$pct.2,
+             pct.1 = diff$pct.1, pct.2 = diff$pct.2,
+             pvalue = diff$p_val, adjp = diff$p_val_adj)
+}
+
+
+# 两组间差异分析 ====================
+
+seurat_diff2 <- function(datafilt = datafilt,
+                         group.by = "seurat_clusters",
+                         group1 = "test1",
+                         group2 = "test2",
+                         assay = "RNA",
+                         min.pct = 0.25,
+                         thres.fc = 0.25) {
+  library(Seurat)
+  library(future)
+  
+  # 设定差异分析的分组
+  
+  datafilt <- SetIdent(datafilt, value = group.by)
+  
+  # 并行运算
+  
+  plan(multisession, workers = 4)
+  options(future.globals.maxSize = 300*1024^3)
+  
+  diff <- FindMarkers(datafilt,
+                      test.use = 'LR',
+                      ident.1 = group1,
+                      ident.2 = group2,
+                      assay = assay,
+                      slot = 'data', 
+                      min.pct = min.pct,
+                      logfc.threshold = thres.fc)
+  plan(sequential)
+  
+  # 整理结果
+  
+  data.frame(gene = rownames(diff),
+             logfc = diff$avg_log2FC,
+             pctfc = diff$pct.1 - diff$pct.2,
+             pct.1 = diff$pct.1, pct.2 = diff$pct.2,
+             pvalue = diff$p_val, adjp = diff$p_val_adj)
+}
+
+
+# 结果可视化 ====================
+
+diff_loadingplot <- function(diff = diff,
+                             topn = 15, 
+                             color = "#560047",
+                             output = name) {
+  library(ggplot2)
+  library(grid)
+  library(dplyr)
+  library(cowplot)
+  
+  # 批量画图
+  
+  all_plots <- lapply(unique(diff$cluster), function(i){
+    
+    input <- diff[diff$cluster == i,]
+    input <- data.frame(id = input$gene,
+                        value = input$logfc)
+    
+    # 预处理输入数据
+    
+    input <- input[order(input$value),]
+    input$number <- 1:nrow(input)
+    input$number <- input$number / nrow(input)
+    input <- input[order(input$value, decreasing = T),]
+    
+    # 选择注释基因
+    
+    select <- top_n(input, topn, value)
+    y_min <- min(input$value)
+    y_max <- max(input$value)
+    top_genes <- select$id
+    
+    # 开始画图
+    
+    ggplot(input, aes(x = number, y = value)) + 
+      geom_point(size = 1.5, colour = "grey90") + 
+      geom_point(data = select, size = 3, color = color) + 
+      
+      annotate("text", x = 1.1, y = seq(
+        y_max, y_min, length.out = topn)[1:length(top_genes)], 
+        label = top_genes, hjust = 0, col = color, size = 4.5) + 
+      coord_cartesian(xlim = c(0, 1), clip = "off") + 
+      
+      theme_bw() + 
+      theme(panel.grid.major.x=element_blank(),
+            panel.grid.minor.x=element_blank(),
+            axis.text = element_text(colour = "black", size = 15),
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.title = element_text(colour = "black", size = 15),
+            plot.margin = unit(c(1, 5, 1, 1), "lines"),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 0.5)) + 
+      labs(x = 'Genes', y= 'Gene loadings',title = i)
+  })
+  
+  # 导出结果
+  
+  height = round(length(all_plots)/5 + 0.35, 0) * 5
+  all_plots <- plot_grid(plotlist = all_plots, ncol = 5)
+  
+  ggsave(output, all_plots, 
+         width = 20, height = height, limitsize = FALSE)
+}
+
+
+
+# 基因集分组富集分析 ===========================================================
+
+enrichr_cluster <- function(data = data,
+                            source = path,
+                            geneset = "KEGG",
+                            cutoff_p = 0.05,
+                            cutoff_adjustp = 1) {
+  
+  library(clusterProfiler)
+  library(enrichplot)
+  library(ggplot2)
+  library(gridExtra)
+  library(msigdbr)
+  options(connectionObserver = NULL)
+  
+  # 处理注释信息 ----------
+  
+  if (is.null(geneset)) {
+    
+    sig_list <- read.table(source, sep = ",", header = F,
+                           row.names = 1, na.strings = "")
+    
+    sig_list <- lapply(rownames(sig_list), function(i){
+      subdata <- t(sig_list[i,])[,1]
+      subdata <- data.frame(term = i, gene = subdata)
+    })
+    
+    sig_list <- do.call(rbind, sig_list)
+    sig_list <- na.omit(sig_list)
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- data.frame(term = genesets[,2], gene = genesets[,1])
+    
+  }
+  
+  # 循环富集分析 ----------
+  
+  results <- lapply(unique(data$type), function(i){
+    input <- data$gene[data$type == i]
+    kk <- enricher(input, TERM2GENE = sig_list,
+                   pvalueCutoff = 1, qvalueCutoff = 1)
+    
+    # 提取结果
+    
+    if (!is.null(kk)) {
+      result <- kk@result
+      result$type <- i
+      result[order(result$pvalue),]
+    } else {NA}
+  })
+  
+  results <- results[!is.na(results)]
+  results <- do.call(rbind, results)
+  
+  # 总结结果 ----------
+  
+  results <- data.frame(id = results$ID,
+                        type = results$type,
+                        pvalue = results$pvalue,
+                        adjustp = results$p.adjust,
+                        ratio = results$GeneRatio,
+                        summary = results$geneID)
+  
+  # 结果过滤 ----------
+  
+  results <- results[results$pvalue < cutoff_p &
+                       results$adjustp < cutoff_adjustp,]
+}
+
+
+
+# 基因集分组富集分析 (可视化) ==============================
+
+enrichr_cluster_plot <- function(data = data,
+                                 select = "pvalue",
+                                 topN = 5,
+                                 color = "col2",
+                                 outlier.rm = T) {
+  library(dplyr)
+  library(reshape2)
+  library(ComplexHeatmap)
+  library(circlize)
+  
+  # 整理数据
+  
+  data[,select] <- -log10(data[,select])
+  
+  # 选择top的genesets
+  
+  data <- do.call(rbind, lapply(unique(data$type), function(i){
+    subdata <- data[data$type == i,]
+    top_n(subdata, topN, pvalue)
+  }))
+  
+  # 确定排序
+  
+  order <- unique(data$id)
+  
+  # 长宽转换
+  
+  data <- acast(data, id ~ type, value.var = select,
+                fun.aggregate = mean, na.rm = TRUE)
+  
+  data[data == "NaN"] <- 0
+  data <- data[order,]
+  
+  # 设置颜色
+  
+  if (color == "col1") {
+    col <- colorRampPalette(c("#1B0084","#1B099A","#1C14AE","#1C20C0","#1F2DCE",
+                              "#233DD6","#2950CE","#2E68AB","#377989","#3F876A",
+                              "#46954D","#53A036","#65AB26","#7BB41A","#95BE16",
+                              "#AFC61C","#C6CE26","#DAD636","#EAE04E","#F1EC74",
+                              "#F8F7AF","#FFFFFF"))(50)
+    
+  } else if (color == "col2") {
+    col <- rev(colorRampPalette(c("#360E24","#5D1A58","#723692","#795CC3","#7487E0",
+                                  "#7EB0E4","#AAD2E3","#E6F1F1"))(50))
+    
+  } else if (color == "col3") {
+    col <- colorRampPalette(c("#352A87","#343EB1","#1558D9","#036CE0","#107AD9",
+                              "#1387D3","#0997D1","#06A4C9","#0CADBB","#23B4A9",
+                              "#43BB97","#6ABE83","#8FBF73","#AEBD66","#CBBB5B",
+                              "#E6B94F","#FDBE3C","#FBCF2C","#F5E21E","#F9FB0E"))(50)
+  }
+  
+  # 计算四分位值从而确定颜色范围
+  
+  if (outlier.rm == T) {
+    all_value <- reshape2::melt(data)
+    thres <- quantile(all_value$value, probs = c(0.05, 0.95))
+    col <- colorRamp2(seq(from = thres[1], to = thres[2],
+                          length.out = length(col)), col)}
+  
+  # 热图可视化
+  
+  Heatmap(data, col = col, 
+          show_row_names = T, 
+          show_column_names = T,
+          column_names_rot = 45,
+          cluster_rows = F, show_row_dend = F,
+          cluster_columns=F, show_column_dend = F, 
+          rect_gp = gpar(col = "white", lwd = 0.75))
+}
+
+
+
+# 比例差异分析 =================================================================
+
+# umap密度图 ====================
+
+prop_density <- function(datafilt = datafilt,
+                         group = "group",
+                         coord = "umap") {
+  library(Seurat)
+  library(ggplot2)
+  library(viridis)
+  
+  # 整理数据
+  
+  info <- datafilt@meta.data
+  input <- data.frame(Embeddings(datafilt, coord))
+  input$group <- info[,group]
+  
+  # 开始画图
+  
+  ggplot(input, aes(x = input[,1],y = input[,2])) +
+    stat_density_2d(aes(fill = ..density..),
+                    geom = "raster", h = 2, contour = FALSE) + 
+    geom_density2d(size = 0.1, colour = "#FDAF9199",
+                   alpha = 0.3, bins = 15, h = 3.5) +
+    scale_fill_viridis(option="magma") + 
+    
+    theme_bw() + 
+    labs(x = 'UMAP1',y= 'UMAP2',title = '') + 
+    theme(strip.background = element_rect(colour = NA, fill = 'grey90'),
+          strip.text.x = element_text(size = 15), # 控制标题字体的大小
+          axis.title = element_text(colour = "black", size = 15), 
+          legend.key.size = unit(0.75, 'cm'),
+          legend.text = element_text(size = 12),
+          legend.title = element_blank(), 
+          panel.grid = element_blank(),
+          strip.placement = 'outside',
+          axis.ticks = element_blank(),
+          axis.text = element_blank()) +
+    scale_x_continuous(expand = c(0,0)) +
+    scale_y_continuous(expand = c(0,0)) + 
+    facet_wrap(~group, nrow = 1)
+}
+
+
+# 背靠背prop ====================
+
+prop_back2back <- function(datafilt = datafilt,
+                           group = "group",
+                           cluster = "celltype",
+                           order = TRUE) {
+  library(Seurat)
+  library(ggplot2)
+  library(gtools)
+  
+  # 整理数据
+  
+  info <- datafilt@meta.data
+  info <- data.frame(group = info[,group],
+                     cluster = info[,cluster])
+  
+  input <- data.frame(table(info$group, info$cluster))
+  names(input) <- c("group", "cluster", "prop")
+  
+  # 把数量转成比例
+  
+  input <- do.call(rbind, lapply(unique(input$group), function(i){
+    subinput <- input[input$group == i,]
+    subinput$prop <- subinput$prop / sum(subinput$prop)
+    subinput}))
+  
+  input$label <- paste0(round(input$prop * 100, 1), "%")
+  
+  # 排序处理
+  
+  if (order == TRUE) {
+    name <- unique(mixedsort(input$cluster, decreasing = TRUE))
+    input$cluster <- factor(input$cluster, levels = name)
+  }
+  
+  # 开始画图
+  
+  ggplot(input, aes(x = cluster, fill = group)) + 
+    scale_fill_manual(values = c("#A231A1", "#F2D7EE")) + 
+    
+    geom_bar(stat = "identity",
+             data = subset(input, group == unique(input$group)[1]),
+             aes(y = prop)) +
+    geom_text(data = subset(input, group == unique(input$group)[1]), 
+              aes(y = prop, label = label), size = 5, hjust = -0.1) +
+    
+    geom_bar(stat = "identity",
+             data = subset(input, group == unique(input$group)[2]),
+             aes(y = prop * (-1)) ) +
+    geom_text(data = subset(input, group == unique(input$group)[2]), 
+              aes(y = prop * (-1), label = label), size = 5, hjust = 1.1) +
+    
+    theme_bw() +
+    theme(legend.key.size = unit(1,'cm'),
+          legend.text = element_text(size = 12),
+          legend.title = element_blank(),
+          panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+    
+    coord_flip() + ylab("Proportion") + xlab("") + 
+    ylim(-max(input$prop) - 0.035, max(input$prop) + 0.035)
+}
+
+
+
+# 基因在亚群间分布 =============================================================
+
+exp_distribution <- function(datafilt = datafilt,
+                             select = select,
+                             group = group,
+                             order = TRUE,
+                             decreasing = TRUE,
+                             show.point = TRUE,
+                             rotate = 45) {
+  
+  library(Seurat)
+  library(stringr)
+  library(ggplot2)
+  library(ggpubr)
+  library(ggrastr)
+  library(cowplot)
+  library(ggbeeswarm)
+  
+  
+  # 画图函数 ----------
+  
+  common_dotbox <- function(input = input,
+                            rotate = 45,
+                            order = TRUE,
+                            decreasing = F,
+                            show.point = TRUE) {
+    
+    # 均值标准差计算
+    
+    aggdata1 <- aggregate(input$value, by = list(input$type), FUN = mean)
+    aggdata2 <- aggregate(input$value, by = list(input$type), FUN = sd)
+    
+    new_data <- data.frame(aggdata1, sd = aggdata2[,2])
+    names(new_data)[1:2] <- c("id", "mean_value")
+    
+    # 数据排序
+    
+    if (order == TRUE) {
+      levels <- new_data$id[order(new_data$mean_value, decreasing = decreasing)]
+      input$type <- factor(input$type, levels = levels)
+      new_data$id <- factor(new_data$id, levels = levels)
+    }
+    
+    # 开始画图
+    
+    if (show.point == TRUE) {
+      
+      plot <- ggplot(new_data, aes(x = id, y = mean_value)) +
+        
+        geom_quasirandom(data = input,
+                         aes(x = type, y = value),
+                         colour = "grey90", 
+                         size = 1, 
+                         alpha = 1) + 
+        
+        geom_pointrange(aes(ymin = mean_value-sd,
+                            ymax = mean_value+sd))
+      
+    } else {
+      
+      plot <- ggplot(new_data, aes(x = id, y = mean_value)) +
+        geom_pointrange(aes(ymin = mean_value-sd,
+                            ymax = mean_value+sd))
+      
+    }
+    
+    plot + theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none", # 去除图例
+            axis.text = element_text(colour = "black", size = 15), 
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+      labs(x = '', y= 'Gene activity',title = '') + 
+      rotate_x_text(rotate)
+  }
+  
+  
+  # 开始画图 ----------
+  
+  if (length(select) == 1) {
+    
+    data <- GetAssayData(datafilt, slot = "data", assay = "RNA")[select,]
+    data <- data.frame(as.matrix(data))
+    
+    info <- datafilt@meta.data
+    input <- data.frame(value = data[,1],
+                        type = info[,group])
+    
+    plot <- common_dotbox(input = input,
+                          rotate = rotate,
+                          order = order,
+                          decreasing = decreasing,
+                          show.point = show.point)
+    plot + ggtitle(select)
+    
+  } else {
+    
+    data <- GetAssayData(datafilt, slot = "data", assay = "RNA")[select,]
+    data <- data.frame(t(as.matrix(data)))
+    
+    allplots <- lapply(colnames(data), function(i){
+      info <- datafilt@meta.data
+      input <- data.frame(value = data[,i],
+                          type = info[,group])
+      
+      plot <- common_dotbox(input = input,
+                            rotate = rotate,
+                            order = order,
+                            decreasing = decreasing,
+                            show.point = show.point)
+      plot + ggtitle(i)
+    })
+    
+    plot_grid(plotlist = allplots, ncol = 2)
+  }
+  
+}
+
+
+
+# ECDF曲线 =====================================================================
+
+ecdf_plot <- function(input = input,
+                      ylim = c(0,1)) {
+  
+  library(ggplot2)
+  library(rstatix)
+  
+  # 设定颜色
+  
+  col <- c("#F2AB27","#ABDAE1","#257396","#1C9DCE","#F6CB66","#EFDA34",
+           "#E6CFA9","#DAD0D6","#E5E4E3","#CA5A7C","#9C78AF","#F2D7EE",
+           "#B6D683","#00A9A3","#D6D756")
+  
+  # 开始画图
+  
+  plot <- ggplot(input, aes(value, color = type)) +
+    stat_ecdf(geom = "step", size = 1) + 
+    scale_color_manual(values = c(col)) + 
+    labs(y = "Cumulative fraction") +
+    theme_bw() + 
+    theme(legend.key.size = unit(1,'cm'),
+          legend.text = element_text(size = 12),
+          legend.title = element_blank(),
+          panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) +
+    ylim(ylim)
+  
+  # 计算p值
+  
+  pvalue <- wilcox_test(input, value ~ type, alternative = "two.sided")
+  pvalue <- pvalue$p[1]
+  
+  if(length(unique(input$type)) == 2) {
+    plot + 
+      annotate(geom = "text", x = -Inf, y = Inf, size = 5,
+               hjust = -0.35, vjust = 3, label = paste0("P = ", pvalue))
+  } else {plot}
+}
+
+
+
+# 可视化方法二 ====================
+
+exp_distribution_ecdf <- function(datafilt = datafilt,
+                                  assay = "RNA",
+                                  select = select,
+                                  group = group,
+                                  method = "wilcox.test",
+                                  ncol = 2) {
+  
+  library(Seurat)
+  library(stringr)
+  library(ggplot2)
+  library(ggpubr)
+  library(ggrastr)
+  library(cowplot)
+  library(ggbeeswarm)
+  
+  
+  # 画图函数 ----------
+  
+  ecdf_plot <- function(input = input,
+                        ylim = c(0,1)) {
+    
+    library(ggplot2)
+    library(rstatix)
+    
+    # 设定颜色
+    
+    col <- c("#F2AB27","#ABDAE1","#257396","#1C9DCE","#F6CB66","#EFDA34",
+             "#E6CFA9","#DAD0D6","#E5E4E3","#CA5A7C","#9C78AF","#F2D7EE",
+             "#B6D683","#00A9A3","#D6D756")
+    
+    # 开始画图
+    
+    plot <- ggplot(input, aes(value, color = type)) +
+      stat_ecdf(geom = "step", size = 1) + 
+      scale_color_manual(values = c(col)) + 
+      labs(y = "Cumulative fraction") +
+      theme_bw() + 
+      theme(legend.key.size = unit(1,'cm'),
+            legend.text = element_text(size = 12),
+            legend.title = element_blank(),
+            panel.grid = element_blank(),
+            axis.text = element_text(colour = "black", size = 15),
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) +
+      ylim(ylim)
+    
+    # 计算p值
+    
+    pvalue <- wilcox_test(input, value ~ type, alternative = "two.sided")
+    pvalue <- pvalue$p[1]
+    
+    if(length(unique(input$type)) == 2) {
+      plot + 
+        annotate(geom = "text", x = -Inf, y = Inf, size = 5,
+                 hjust = -0.35, vjust = 3, label = paste0("P = ", pvalue))
+    } else {plot}
+  }
+  
+  
+  # 开始画图 ----------
+  
+  if (length(select) == 1) {
+    
+    data <- GetAssayData(datafilt, slot = "data", assay = assay)[select,]
+    data <- data.frame(as.matrix(data))
+    
+    info <- datafilt@meta.data
+    input <- data.frame(value = data[,1],
+                        type = info[,group])
+    
+    input <- na.omit(input)
+    plot <- ecdf_plot(input, ylim = c(0,1))
+    plot <- plot + ggtitle(select)
+    plot
+    
+  } else {
+    
+    common <- intersect(select, rownames(datafilt))
+    data <- GetAssayData(datafilt, slot = "data", assay = assay)[common,]
+    data <- data.frame(t(as.matrix(data)))
+    
+    allplots <- lapply(colnames(data), function(i){
+      info <- datafilt@meta.data
+      input <- data.frame(value = data[,i],
+                          type = info[,group])
+      
+      input <- na.omit(input)
+      plot <- ecdf_plot(input, ylim = c(0,1))
+      plot <- plot + ggtitle(select)
+      plot
+      
+    })
+    
+    plot_grid(plotlist = allplots, ncol = ncol)
+  }
+  
+}
+
+
+
+# 可视化单细胞差异分析结果 ====================
+
+heatmap_diff_seurat <- function(datafilt = datafilt,
+                                diffdata = diffdata,
+                                group.by = "seurat_clusters",
+                                color = "blue2red",
+                                topn = 10,
+                                col_rot = 0,
+                                label = TRUE,
+                                font.size = 9,
+                                outlier.rm = T) {
+  
+  library(ComplexHeatmap)
+  library(circlize)
+  library(gtools)
+  
+  # 设定颜色
+  
+  if (color == "parula") {
+    col <- colorRampPalette(c("#352A87","#343EB1","#1558D9","#036CE0","#107AD9",
+                              "#1387D3","#0997D1","#06A4C9","#0CADBB","#23B4A9",
+                              "#43BB97","#6ABE83","#8FBF73","#AEBD66","#CBBB5B",
+                              "#E6B94F","#FDBE3C","#FBCF2C","#F5E21E","#F9FB0E"))(100)
+    
+  } else if (color == "kovesi") {
+    col <- colorRampPalette(c("#1B0084","#1B099A","#1C14AE","#1C20C0","#1F2DCE",
+                              "#233DD6","#2950CE","#2E68AB","#377989","#3F876A",
+                              "#46954D","#53A036","#65AB26","#7BB41A","#95BE16",
+                              "#AFC61C","#C6CE26","#DAD636","#EAE04E","#F1EC74",
+                              "#F8F7AF","#FFFFFF"))(100)
+    
+  } else if (color == "ocean.haline") {
+    col <- colorRampPalette(c("#2A186C","#2E1B87","#2B229F","#1D35A1","#11459A",
+                              "#0C5294","#115D8F","#19678C","#22718A","#2B7A89",
+                              "#328388","#388D88","#3E9886","#44A284","#4CAC80",
+                              "#55B67A","#62BF72","#73C869","#8AD060","#A4D75C",
+                              "#BEDC62","#D5E171","#EAE784","#FDEF9A"))(100)
+    
+  } else if (color == "ocean.dense") {
+    col <- colorRampPalette(c("#360E24","#5D1A58","#723692","#795CC3",
+                              "#7487E0", "#7EB0E4","#AAD2E3","#E6F1F1"))(100)
+    
+  } else if (color == "magma") {
+    col <- c(colorRampPalette(c(magma(323, begin = 0.15)[1]))(10),
+             magma(323, begin = 0.18))
+    
+  } else if (color == "white2blue") {
+    col <- colorRampPalette(c("#FBF4F8","#E5E0ED","#BFC6DD","#8CADCC",
+                              "#4E92BA","#1871A8","#085889","#003758"))(100)
+    
+  } else if (color == "blue2red") {
+    col <- colorRampPalette(c("#0070b2","#009bc7","#5ec7dd",
+                              "#b8e3ea","#f3f3f1","#fccdb9",
+                              "#f79676","#f15e4c","#da1735"))(100)
+    
+  } else if (color == "rainbow") {
+    col <- colorRampPalette(c("#343391","#0064af","#0090cc","#00b6db","#01b7c2",
+                              "#53c0a3","#8dcb8a","#bbd967","#fbd324","#f6bd25",
+                              "#f4a02e","#ed6f32","#ea5c2e","#d5452f","#c02e2f",
+                              "#8b2a21"))(100)
+  }
+  
+  # 处理diffdata (过滤p > 0.05的结果)
+  
+  diffdata <- data.frame(id = diffdata$gene,
+                         cluster = diffdata$cluster,
+                         logfc = diffdata$logfc,
+                         pvalue = diffdata$adjp)
+  
+  diffdata <- diffdata[diffdata$pvalue < 0.01 &
+                         diffdata$logfc > 0.5,]
+  
+  # 选择top的genesets
+  
+  select <- mixedsort(as.character(unique(diffdata$cluster)))
+  
+  diffdata <- do.call(rbind, lapply(select, function(i){
+    subdata <- diffdata[diffdata$cluster == i,]
+    subdata <- top_n(subdata, topn, logfc)
+    subdata[order(subdata$pvalue),]
+  }))
+  
+  # 处理expdata
+  
+  expdata <- as.matrix(GetAssayData(datafilt[diffdata$id,], slot = "data",
+                                    assay = "RNA"))
+  expdata <- data.frame(expdata, check.names = F)
+  
+  # 处理clustinfo
+  
+  info <- datafilt@meta.data
+  clustinfo <- data.frame(id = rownames(info),
+                          cluster = info[,group.by])
+  
+  # 处理表达数据
+  
+  input <- lapply(as.character(unique(clustinfo$cluster)), function(i){
+    select <- clustinfo$id[clustinfo$cluster == i]
+    data.frame(rowMeans(expdata[,select]), check.names = F)
+  })
+  
+  input <- do.call(cbind, input)
+  colnames(input) <- as.character(unique(clustinfo$cluster))
+  
+  # 数据排序
+  
+  input <- input[,mixedsort(colnames(input))]
+  
+  # 数据标准化
+  
+  input <- t(scale(t(input)))
+  
+  # 设置颜色
+  
+  if (outlier.rm == T) {
+    all_value <- reshape2::melt(input)
+    thres <- quantile(all_value$value, probs = c(0.01, 0.99))
+    col <- colorRamp2(seq(from = thres[1], to = thres[2],
+                          length.out = length(col)), col)
+  }
+  
+  # 开始画图
+  
+  Heatmap(input, col = col, 
+          show_row_names = label, 
+          show_column_names = T, 
+          column_names_rot = col_rot,
+          cluster_rows = F, show_row_dend = F,
+          cluster_columns = F, show_column_dend = F,
+          row_names_gp = gpar(fontsize = font.size))
+}
+
+
+# 散点箱线图2 ====================
+
+common_dotbox2 <- function(input = input,
+                           rotate = 45,
+                           order = TRUE,
+                           decreasing = F,
+                           show.point = TRUE) {
+  library(ggplot2)
+  library(ggpubr)
+  library(ggrastr)
+  library(ggbeeswarm)
+  
+  # 均值标准差计算
+  
+  aggdata1 <- aggregate(input$value, by = list(input$type), FUN = mean)
+  aggdata2 <- aggregate(input$value, by = list(input$type), FUN = sd)
+  
+  new_data <- data.frame(aggdata1, sd = aggdata2[,2])
+  names(new_data)[1:2] <- c("id", "mean_value")
+  
+  # 数据排序
+  
+  if (order == TRUE) {
+    levels <- new_data$id[order(new_data$mean_value, decreasing = decreasing)]
+    input$type <- factor(input$type, levels = levels)
+    new_data$id <- factor(new_data$id, levels = levels)
+  }
+  
+  # 开始画图
+  
+  if (show.point == TRUE) {
+    
+    plot <- ggplot(new_data, aes(x = id, y = mean_value)) +
+      
+      geom_quasirandom(data = input,
+                       aes(x = type, y = value),
+                       colour = "grey90", 
+                       size = 1, 
+                       alpha = 1) + 
+      
+      geom_pointrange(aes(ymin = mean_value-sd,
+                          ymax = mean_value+sd))
+    
+  } else {
+    
+    plot <- ggplot(new_data, aes(x = id, y = mean_value)) +
+      geom_pointrange(aes(ymin = mean_value-sd,
+                          ymax = mean_value+sd))
+    
+  }
+  
+  plot + theme_bw() + 
+    theme(panel.grid = element_blank(),
+          legend.position = "none", # 去除图例
+          axis.text = element_text(colour = "black", size = 15), 
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+    labs(x = '', y= 'Gene activity',title = '') + 
+    rotate_x_text(rotate)
+}
+
+
+# 亚群特异JSD分数 ====================
+
+jsd_score <- function(data = data,
+                      cluster = cluster,
+                      select = NULL) {
+  
+  library(philentropy)
+  library(reshape2)
+  library(pbapply)
+  library(tibble)
+  library(caret)
+  
+  # 预处理分群数据
+  
+  cluster$value <- 1
+  cluster <- reshape2::acast(cluster, id ~ type,
+                             value.var = "value",
+                             fun.aggregate = mean)
+  
+  cluster[cluster == "NaN"] <- 0
+  
+  # 排除variation为0的基因
+  
+  data <- as.matrix(data)
+  var <- do.call(rbind, lapply(rownames(data), function(i){
+    data.frame(id = i, value = var(data[i,]))}))
+  data <- data[var$id[var$value > 0],]
+  
+  # 预处理表达数据
+  
+  data <- t(data)
+  preprocess <- caret::preProcess(data, method = c("range"))
+  data <- predict(preprocess, data)
+  
+  # 保持行名一致
+  
+  common <- intersect(rownames(cluster), rownames(data))
+  cluster <- cluster[common,]
+  data <- data[common,]
+  
+  # 只选择部分亚组进行分析
+  
+  if (!is.null(select)) {
+    cluster <- data.frame(row.names = rownames(cluster),
+                          select = cluster[,select])}
+  
+  # 计算JSD
+  
+  jsd <- pblapply(colnames(data), function(i) {
+    sapply(colnames(cluster), function(j) {
+      
+      1 - JSD(rbind(data[,i], cluster[,j]),
+              unit = 'log2', est.prob = "empirical")
+    })
+  })
+  
+  jsd <- do.call(rbind, jsd)
+  
+  # 结果命名
+  
+  if (!is.null(select)) {
+    rownames(jsd) <- colnames(data)
+    colnames(jsd) <- paste0(select, "_jsd")
+    
+  } else {
+    rownames(jsd) <- colnames(data)
+    colnames(jsd) <- colnames(cluster)
+  }
+  
+  # 输出结果
+  
+  if (!is.null(select)) {
+    rownames_to_column(data.frame(jsd), var = "id")
+    
+  } else {
+    jsd
+  }
+  
+}
+
+
+# 画带文本的热图 ====================
+
+heatmap_text <- function(input = input,
+                         color = "blue2red",
+                         order_name = T,
+                         cutoff = 0.2,
+                         col_rot = 45,
+                         cluster_row = T,
+                         cluster_col = T,
+                         outlier.rm = T) {
+  
+  library(ComplexHeatmap)
+  library(circlize)
+  library(gtools)
+  
+  # 确保输入的是矩阵
+  
+  input <- as.matrix(input)
+  
+  # 设定颜色
+  
+  if (color == "parula") {
+    col <- colorRampPalette(c("#352A87","#343EB1","#1558D9","#036CE0","#107AD9",
+                              "#1387D3","#0997D1","#06A4C9","#0CADBB","#23B4A9",
+                              "#43BB97","#6ABE83","#8FBF73","#AEBD66","#CBBB5B",
+                              "#E6B94F","#FDBE3C","#FBCF2C","#F5E21E","#F9FB0E"))(100)
+    
+  } else if (color == "kovesi") {
+    col <- colorRampPalette(c("#1B0084","#1B099A","#1C14AE","#1C20C0","#1F2DCE",
+                              "#233DD6","#2950CE","#2E68AB","#377989","#3F876A",
+                              "#46954D","#53A036","#65AB26","#7BB41A","#95BE16",
+                              "#AFC61C","#C6CE26","#DAD636","#EAE04E","#F1EC74",
+                              "#F8F7AF","#FFFFFF"))(100)
+    
+  } else if (color == "ocean.haline") {
+    col <- colorRampPalette(c("#2A186C","#2E1B87","#2B229F","#1D35A1","#11459A",
+                              "#0C5294","#115D8F","#19678C","#22718A","#2B7A89",
+                              "#328388","#388D88","#3E9886","#44A284","#4CAC80",
+                              "#55B67A","#62BF72","#73C869","#8AD060","#A4D75C",
+                              "#BEDC62","#D5E171","#EAE784","#FDEF9A"))(100)
+    
+  } else if (color == "ocean.dense") {
+    col <- colorRampPalette(c("#360E24","#5D1A58","#723692","#795CC3",
+                              "#7487E0", "#7EB0E4","#AAD2E3","#E6F1F1"))(100)
+    
+  } else if (color == "magma") {
+    col <- c(colorRampPalette(c(magma(323, begin = 0.15)[1]))(10),
+             magma(323, begin = 0.18))
+    
+  } else if (color == "white2blue") {
+    col <- colorRampPalette(c("#892C29","#E2431D","#FACE1D","#F0F7F0","#01ADD8",
+                              "#265EAB","#3C2D96"))(100)
+    
+  } else if (color == "blue2red") {
+    col <- colorRampPalette(rev(c("#892C29","#E2431D","#FACE1D","#F0F7F0","#01ADD8",
+                                  "#265EAB","#3C2D96")))(100)
+    
+  } else if (color == "rainbow") {
+    col <- colorRampPalette(c("#343391","#0064af","#0090cc","#00b6db","#01b7c2",
+                              "#53c0a3","#8dcb8a","#bbd967","#fbd324","#f6bd25",
+                              "#f4a02e","#ed6f32","#ea5c2e","#d5452f","#c02e2f",
+                              "#8b2a21"))(100)
+  }
+  
+  # 计算四分位值从而确定颜色范围
+  
+  if (outlier.rm == T) {
+    all_value <- reshape2::melt(input)
+    thres <- quantile(all_value$value, probs = c(0.01, 0.99))
+    col <- colorRamp2(seq(from = thres[1], to = thres[2],
+                          length.out = length(col)), col)}
+  
+  # 排序处理
+  
+  if (order_name == T) {
+    input <- input[mixedsort(rownames(input)),]
+    input <- input[,mixedsort(colnames(input))]
+  } else {
+    input <- input
+  }
+  
+  # 画热图
+  
+  draw(Heatmap(input, col = col, 
+               name = "Z-score", 
+               show_row_names = T, 
+               show_column_names = T, 
+               column_names_rot = col_rot, 
+               
+               cluster_rows = cluster_row, show_row_dend = F,
+               cluster_columns = cluster_col, show_column_dend = F, 
+               rect_gp = gpar(col = "white", lwd = 0.75), 
+               
+               cell_fun = function(j, i, x, y, width, height, fill) {
+                 if(input[i, j] > cutoff)
+                   grid.text(round(input, 2)[i, j], x, y, gp = gpar(fontsize = 10))
+               },
+               heatmap_legend_param = list(
+                 legend_direction = "horizontal", 
+                 legend_width = unit(6, "cm"))),
+       heatmap_legend_side = "bottom")
+}
+
+
+
+# 柱状比例图 ====================
+
+prop_plot_hca <- function(input = input,
+                          rotate = 45,
+                          decreasing = T,
+                          species = "human") {
+  
+  library(ggplot2)
+  library(ggpubr)
+  library(gtools)
+  
+  # 变量排序
+  
+  input$Var2 <- as.character(input$Var2)
+  name <- unique(mixedsort(input$Var2, decreasing = decreasing))
+  input$Var2 <- factor(input$Var2, levels = name)
+  
+  # 设置颜色
+  
+  if (species == "human") {
+    
+    col <- c("CD8T" = "#B8E3EA",
+             "CD4T" = "#0070B2",
+             "Treg" = "#A6D719",
+             "NKcell" = "#F15E4C",
+             "Bcell" = "#A231A1",
+             "DC" = "#D5B81B",
+             "Macro" = "#028090",
+             "Mono" = "#B2DBBF",
+             "MAST" = "#B32226",
+             "Neutrophil" = "#00A9A3",
+             "Fibroblast" = "#FBD324",
+             "Endothelial" = "#CD6981",
+             "tumor" = "#9CAEA9",
+             "None" = "#F6F5BD")
+    
+  } else if (species == "mouse") {
+    
+    col <- c("CD8T" = "#B8E3EA",
+             "CD4T" = "#0070B2",
+             "Treg" = "#A6D719",
+             "NKcell" = "#F15E4C",
+             "Bcell" = "#A231A1",
+             "DC" = "#D5B81B",
+             "MoMac" = "#B2DBBF", 
+             "MAST" = "#B32226",
+             "Neutrophil" = "#00A9A3",
+             "Fibroblast" = "#FBD324",
+             "Endothelial" = "#CD6981",
+             "tumor" = "#9CAEA9",
+             "None" = "#F6F5BD")
+    
+  }
+  
+  # 开始画图
+  
+  ggplot(input, aes(x = Var1, y = Freq, fill = Var2)) +
+    geom_bar(stat = "identity", position = "fill", width = 0.75) + 
+    scale_fill_manual(values = col)+
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          legend.key.size = unit(0.75,'cm'),
+          legend.text = element_text(size = 15),
+          legend.title = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15)) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = '', y = 'Proportion', title = '') + 
+    rotate_x_text(rotate)
+}
+
+
+
+# ECDF曲线 ====================
+
+ecdf_plot <- function(input = input,
+                      ylim = c(0,1),
+                      title = NULL) {
+  
+  library(ggplot2)
+  library(rstatix)
+  
+  # 设定颜色
+  
+  col <- c("#F2AB27","#ABDAE1","#257396","#1C9DCE","#F6CB66","#EFDA34",
+           "#E6CFA9","#DAD0D6","#E5E4E3","#CA5A7C","#9C78AF","#F2D7EE",
+           "#B6D683","#00A9A3","#D6D756")
+  
+  # 开始画图
+  
+  plot <- ggplot(input, aes(value, color = type)) +
+    stat_ecdf(geom = "step", size = 1) + 
+    scale_color_manual(values = c(col)) + 
+    labs(y = "Cumulative fraction") +
+    theme_bw() + 
+    theme(legend.key.size = unit(1,'cm'),
+          legend.text = element_text(size = 12),
+          legend.title = element_blank(),
+          panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) +
+    ylim(ylim) + 
+    ggtitle(title)
+  
+  # 计算p值
+  
+  pvalue <- wilcox_test(input, value ~ type, alternative = "two.sided")
+  pvalue <- pvalue$p[1]
+  
+  if(length(unique(input$type)) == 2) {
+    plot <- plot + 
+      annotate(geom = "text", x = -Inf, y = Inf, size = 5,
+               hjust = -0.35, vjust = 3, label = paste0("P = ", pvalue))
+  }
+  
+  # 添加title
+  
+  if (is.null(title)) {
+    plot
+  } else {
+    plot + ggtitle(title)
+  }
+}
+
+# 柱状比例图 ====================
+
+prop_plot_hca <- function(input = input,
+                          rotate = 45,
+                          decreasing = T,
+                          species = "human") {
+  
+  library(ggplot2)
+  library(ggpubr)
+  library(gtools)
+  
+  # 变量排序
+  
+  input$Var2 <- as.character(input$Var2)
+  name <- unique(mixedsort(input$Var2, decreasing = decreasing))
+  input$Var2 <- factor(input$Var2, levels = name)
+  
+  # 设置颜色
+  
+  if (species == "human") {
+    
+    col <- c("CD8T" = "#B8E3EA",
+             "CD4T" = "#0070B2",
+             "Treg" = "#A6D719",
+             "NKcell" = "#F15E4C",
+             "Bcell" = "#A231A1",
+             "DC" = "#D5B81B",
+             "Macro" = "#028090",
+             "Mono" = "#B2DBBF",
+             "MAST" = "#B32226",
+             "Neutrophil" = "#00A9A3",
+             "Fibroblast" = "#FBD324",
+             "Endothelial" = "#CD6981",
+             "tumor" = "#9CAEA9",
+             "None" = "#F6F5BD")
+    
+  } else if (species == "mouse") {
+    
+    col <- c("CD8T" = "#B8E3EA",
+             "CD4T" = "#0070B2",
+             "Treg" = "#A6D719",
+             "NKcell" = "#F15E4C",
+             "Bcell" = "#A231A1",
+             "DC" = "#D5B81B",
+             "MoMac" = "#B2DBBF", 
+             "MAST" = "#B32226",
+             "Neutrophil" = "#00A9A3",
+             "Fibroblast" = "#FBD324",
+             "Endothelial" = "#CD6981",
+             "tumor" = "#9CAEA9",
+             "None" = "#F6F5BD")
+    
+  }
+  
+  # 开始画图
+  
+  ggplot(input, aes(x = Var1, y = Freq, fill = Var2)) +
+    geom_bar(stat = "identity", position = "fill", width = 0.75) + 
+    scale_fill_manual(values = col)+
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          legend.key.size = unit(0.75,'cm'),
+          legend.text = element_text(size = 15),
+          legend.title = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15)) + 
+    scale_y_continuous(expand = c(0,0)) + 
+    labs(x = '', y = 'Proportion', title = '') + 
+    rotate_x_text(rotate)
+}
+
+
+# ==============================================================================
+
+# 针对某一分组 ("group" 中的 "ko") 对某个亚群 ("celltype" 中的 "CD8") 进行下采样
+
+modify_prop_subsample <- function(datafilt = datafilt,
+                                  group = "group",
+                                  group.name = "ko",
+                                  cluster = "celltype",
+                                  cluster.name = "CD8",
+                                  prop.rm = 0.1) {
+  library(Seurat)
+  library(plyr)
+  
+  # 提取降维数据
+  
+  umap <- Embeddings(datafilt, "umap")
+  
+  # 第一次划分
+  
+  info <- datafilt@meta.data
+  data1 <- datafilt[,info[,group] %in% group.name]
+  data2 <- datafilt[,!(info[,group] %in% group.name)]
+  
+  # 第二次划分
+  
+  info <- data1@meta.data
+  data1A <- data1[,info[,cluster] %in% cluster.name]
+  data1B <- data1[,!(info[,cluster] %in% cluster.name)]
+  data1A <- data1A[,sample(colnames(data1A), (1-prop.rm) * ncol(data1A))]
+  
+  # 合并数据
+  
+  data1 <- merge(data1A, data1B)
+  datafilt <- merge(data1, data2)
+  
+  # 重建坐标
+  
+  umap <- umap[colnames(datafilt),]
+  datafilt[["umap"]] <- CreateDimReducObject(umap, key = "UMAP")
+  datafilt
+}
+
+
+# 针对某一分组 ("group" 中的 "ko") 根据某一基因 ("ITGA6") 的表达，对低表达此基因的细胞进行采样
+
+modify_exp_subsample <- function(datafilt = datafilt,
+                                 group = "group",
+                                 group.name = "ko",
+                                 gene.name = "ITGA6",
+                                 gene.direction = "low",
+                                 prop.rm = 0.9) {
+  library(Seurat)
+  library(plyr)
+  
+  # 提取降维数据
+  
+  umap <- Embeddings(datafilt, "umap")
+  
+  # 处理表达数据
+  
+  exp <- as.matrix(GetAssayData(datafilt, slot = "data",
+                                assay = "RNA")[gene.name,])
+  exp <- data.frame(exp)
+  
+  # 提取相应的细胞
+  
+  if (gene.direction == "high") {
+    select <- rownames(exp)[exp$exp > median(exp$exp)]
+  } else {select <- rownames(exp)[exp$exp < median(exp$exp)]}
+  select <- sample(select, length(select) * prop.rm)
+  
+  # 第一次划分
+  
+  info <- datafilt@meta.data
+  data1 <- datafilt[,info[,group] %in% group.name]
+  data2 <- datafilt[,!(info[,group] %in% group.name)]
+  
+  # 合并数据
+  
+  common <- setdiff(colnames(data1), select)
+  data1 <- data1[,common]
+  datafilt <- merge(data1, data2)
+  
+  # 重建坐标
+  
+  umap <- umap[colnames(datafilt),]
+  datafilt[["umap"]] <- CreateDimReducObject(umap, key = "UMAP")
+  datafilt
+}
+
+
+# 背靠背prop logfc ====================
+
+prop_back2back_lollipop <- function(datafilt = dataimmu,
+                                    group = "group",
+                                    group1 = "H",
+                                    group2 = "L",
+                                    cluster = "celltype_sig2") {
+  
+  
+  library(Seurat)
+  library(ggplot2)
+  library(ggpubr)
+  library(gtools)
+  
+  # 整理数据
+  
+  info <- datafilt@meta.data
+  info <- data.frame(group = info[,group],
+                     cluster = info[,cluster])
+  
+  input <- data.frame(table(info$group, info$cluster))
+  names(input) <- c("group", "cluster", "prop")
+  
+  # 把数量转成比例
+  
+  input <- do.call(rbind, lapply(unique(input$group), function(i){
+    subinput <- input[input$group == i,]
+    subinput$prop <- subinput$prop / sum(subinput$prop)
+    subinput}))
+  
+  fc <- do.call(rbind, lapply(unique(input$cluster), function(i){
+    subinput <- input[input$cluster %in% i,]
+    data.frame(id = i,
+               value = log2(subinput$prop[subinput$group == group1] / 
+                              subinput$prop[subinput$group == group2]))
+  }))
+  
+  # 画图函数
+  
+  lollipop_plot <- function(input = input,
+                            order = TRUE,
+                            decreasing = T) {
+    library(ggplot2)
+    library(forcats)
+    
+    if (order == TRUE) {
+      input <- input[order(input$id, decreasing = decreasing),]
+      input$id <- fct_inorder(input$id)
+    }
+    
+    ggplot(input, aes(x = id, y = value)) +
+      geom_segment(aes(x = id, xend = id, y = 0, yend = value), color = "lightgray") + 
+      geom_point(color = "#5fc2c0", size = 5) + scale_color_viridis_d() +
+      geom_line(aes(id, value))+
+      rotate_x_text(45) + 
+      
+      geom_hline(yintercept = 0,
+                 color = "grey20", linetype = "solid") + 
+      
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            axis.text = element_text(colour = "black", size = 15),
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1),
+            legend.key.size = unit(0.75,'cm'),
+            legend.text = element_text(size = 15),
+            legend.title = element_blank(),
+            legend.position = "right") + 
+      coord_flip()
+  }
+  
+  # 开始画图
+  
+  lollipop_plot(input = fc,
+                order = TRUE,
+                decreasing = T)
+}
+
+
+
+# 去除Doublets ====================
+
+doublet_rm <- function(datafilt = datafilt,
+                       prop_doublet = 0.075) {
+  
+  library(DoubletFinder)
+  library(Seurat)
+  library(dplyr)
+  
+  datafilt <- autocluster(datafilt, nfeatures = 2000, ndim = 15,
+                          neigh = 20, dist = 0.5, res = 0.5)
+  
+  # 寻找最优pK值
+  
+  sweep.res.list <- paramSweep(datafilt, PCs = 1:20, sct = T)
+  sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)  
+  bcmvn <- find.pK(sweep.stats)
+  
+  pK_bcmvn <- bcmvn$pK[which.max(bcmvn$BCmetric)] %>%
+    as.character() %>% as.numeric()
+  
+  # 排除不能检出的同源doublets，优化期望的doublets数量
+  
+  homotypic.prop <- modelHomotypic(datafilt$seurat_clusters)
+  
+  nExp_poi <- round(prop_doublet*ncol(datafilt)) 
+  nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+  
+  # 使用确定好的参数鉴定doublets
+  
+  datafilt <- doubletFinder(datafilt, PCs = 1:20, pN = 0.25,
+                            pK = pK_bcmvn, reuse.pANN = F,
+                            nExp = nExp_poi.adj)
+  
+  names(datafilt@meta.data) <- gsub("DF.classifications.*",
+                                    "DF.classifications",
+                                    colnames(datafilt@meta.data))
+  
+  infodata <- data.frame(id = rownames(datafilt@meta.data),
+                         DFclass = datafilt@meta.data[["DF.classifications"]])
+  
+  # 将结果整合到seurat对象
+  
+  rownames(infodata) <- NULL
+  infodata <- column_to_rownames(infodata, var = "id")
+  datafilt <- AddMetaData(datafilt, infodata)
+  datafilt
+}
+
+
+
+# 返回一个seurat object ====================
+
+metacell_object <- function(data = data,
+                            resolution = 30,
+                            cluster.name = "metacell"){
+  library(Seurat)
+  library(tibble)
+  
+  
+  # 标准化 ----------
+  
+  data <- NormalizeData(data, scale.factor = 10000,
+                        normalization.method = "LogNormalize")
+  
+  data <- FindVariableFeatures(data, nfeatures = 2000, 
+                               selection.method = "vst")
+  
+  data <- ScaleData(data, features = VariableFeatures(data))
+  
+  
+  # 进行聚类 ----------
+  
+  data <- RunPCA(data, assay = 'RNA', slot = 'scale.data')
+  data <- FindNeighbors(data, dims = 1:20, k.param = 10, reduction = "pca")
+  data <- FindClusters(data, resolution = resolution, n.iter = 10)
+  
+  # 重命名亚群名字 
+  
+  data$cluster <- paste0(cluster.name, "_", data$seurat_clusters)
+  
+  
+  # 计算meta counts ----------
+  
+  info <- data.frame(id = colnames(data), metacell = data$cluster)
+  counts <- GetAssayData(data, slot = "counts", assay = "RNA")
+  
+  metadata <- do.call(cbind, lapply(unique(info$metacell), function(i){
+    cell <- info$id[info$metacell == i]
+    metadata <- data.frame(rowSums(counts[,cell]))
+    names(metadata) <- i
+    metadata
+  }))
+  
+  metadata <- as.matrix(metadata)
+  metadata <- CreateSeuratObject(metadata)
+  
+  
+  # 重新标准化并降维 ----------
+  
+  metadata <- NormalizeData(metadata, scale.factor = 10000,
+                            normalization.method = "LogNormalize")
+  
+  metadata <- FindVariableFeatures(metadata, nfeatures = 2000, 
+                                   selection.method = "vst")
+  
+  metadata <- ScaleData(metadata, features = VariableFeatures(data))
+  
+  # 进行聚类
+  
+  metadata <- RunPCA(metadata, assay = 'RNA', slot = 'scale.data')
+  metadata <- FindNeighbors(metadata, dims = 1:20, k.param = 20, reduction = "pca")
+  metadata <- FindClusters(metadata, resolution = 0.5, n.iter = 10)
+  
+  # 重新降维
+  
+  metadata <- RunUMAP(metadata, dims = 1:20,
+                      n.neighbors = 20, min.dist = 0.5, 
+                      reduction = "pca", reduction.name = "umap")
+  
+  
+  # 得到metacell与cell对应关系 ----------
+  
+  info <- data.frame(id = colnames(data), cluster = data$cluster)
+  info <- do.call(rbind, lapply(unique(info$cluster), function(i){
+    data.frame(cluster = i,
+               cell_n = length(info$id[info$cluster == i]),
+               cell_id = paste(info$id[info$cluster == i], collapse=","))
+  }))
+  
+  info <- column_to_rownames(info, var = "cluster")
+  
+  
+  # 整合metadata与注释 ----------
+  
+  metadata <- AddMetaData(metadata, info)
+  metadata
+}
+
+
+
+# compass数据标准化 ====================
+
+compass_norm <- function(reaction.data = name_data,
+                         reaction.info = name_info) {
+  library(data.table)
+  library(stringr)
+  
+  data <- fread(reaction.data, header = T, sep = '\t', fill = T, data.table = F)
+  data <- column_to_rownames(data, var = "V1")
+  
+  
+  # 排除样本间差异小的reaction ----------
+  
+  FSbyMAD <- function(Data, cut.type="topk", value){
+    mads=apply(Data,1,mad)
+    feature_num=length(mads)
+    hist(mads, breaks=feature_num*0.1, col="red",
+         main="Expression (MAD) distribution",
+         xlab="The MAD of feature")
+    if(cut.type=="topk")
+    {
+      index= sort(mads,decreasing = TRUE,index.return=TRUE)
+      if(value>nrow(Data))
+      {
+        value=nrow(Data)
+        cat("Warning: beyond the original feature numnber")
+      }
+      cutoff=index$x[value]
+      abline(v=cutoff,col = "blue",lty = 5,lwd=1.5)
+      index=index$ix[1:value]
+      selectData=Data[index,]
+    }
+    if(cut.type=="cutoff")
+    {
+      abline(v=value,col = "blue",lty = 5,lwd=1.5)
+      index=which(mads>value)
+      selectData=Data[index,]
+    }
+    selectData
+  }
+  
+  data <- FSbyMAD(data, cut.type = "cutoff", value = 0.5)
+  
+  
+  # 数据标准化 ----------
+  
+  data <- -log2(data + 1)
+  data <- t(scale(t(data)))
+  
+  
+  # 只保留pos的reaction ----------
+  
+  data <- data[str_detect(rownames(data), "_pos"),]
+  rownames(data) <- gsub(pattern = "_pos", replacement = "", rownames(data))
+  
+  
+  # 整合metadata并过滤 ----------
+  
+  info <- fread(reaction.info, sep = ",", header = T, check.names = F)
+  info <- data.frame(id = info$reaction_no_direction,
+                     name = info$reaction_name,
+                     subsystem = info$subsystem,
+                     confidence = info$confidence)
+  
+  data <- data.frame(data, check.names = F)
+  data <- rownames_to_column(data, var = "id")
+  
+  data <- merge(info, data, by = "id")
+  data <- data[data$confidence %in% c(0, 4),]
+  
+  # 整理结果
+  
+  rownames(data) <- NULL
+  data <- column_to_rownames(data, var = "id")
+  data <- data[,-c(1:3)]
+  data
+}
+
+
+
+# limma差异分析 ====================
+
+difflimma <- function(data = data,
+                      info = info,
+                      group1 = "R",
+                      group2 = "NR",
+                      filter = FALSE) {
+  
+  # 默认情况都是group1 - group2
+  
+  library(limma)
+  library(metaMA)
+  library(statmod)
+  
+  # 确保排序一致
+  
+  common <- intersect(colnames(data), info$id)
+  info <- info[info$id %in% common,]
+  data <- data[,info$id]
+  data <- as.matrix(data)
+  
+  # 排除变异度小的基因
+  
+  var <- do.call(rbind, lapply(rownames(data), function(i){
+    data.frame(id = i, value = var(data[i,]))}))
+  data <- data[var$id[var$value > 0],]
+  
+  # 构建矩阵
+  
+  grade <- factor(info[,2], levels = c(group2, group1))
+  design <- model.matrix(~0 + grade)
+  
+  rownames(design) <- info$id
+  colnames(design) <- gsub(pattern = "grade", replacement = "",
+                           x = colnames(design))
+  # 对比矩阵
+  
+  cont.matrix <- as.matrix(c(-1, 1))
+  rownames(cont.matrix) <- c(group2, group1)
+  colnames(cont.matrix) <- paste0(group1, " - ", group2)
+  
+  # 线性拟合
+  
+  fit <- lmFit(data, design)
+  fit <- contrasts.fit(fit, cont.matrix)
+  fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+  
+  # 得到差异基因
+  
+  diff <- topTable(fit, adjust = 'fdr',
+                   coef = 1, n = Inf)
+  
+  diff <- data.frame(id = rownames(diff),
+                     logfc = diff$logFC,
+                     t = diff$t,
+                     pvalue = diff$P.Value,
+                     FDR = diff$adj.P.Val)
+  
+  # 得到分组平均值
+  
+  group_mean <- do.call(rbind, lapply(1:nrow(data), function(i){
+    
+    input <- data.frame(id = colnames(data), value = data[i,])
+    input <- merge(input, info, by = "id")
+    input <- na.omit(input)
+    
+    cohen <- (mean(input$value[input$type == group1]) - 
+                mean(input$value[input$type == group2])) / sd(input$value)
+    
+    data.frame(id = rownames(data)[i],
+               mean_G1 = mean(input$value[input$type == group1]),
+               mean_G2 = mean(input$value[input$type == group2]),
+               cohen = cohen)
+  }))
+  
+  colnames(group_mean)[2:3] <- c(group1, group2)
+  
+  # 整合平均值结果
+  
+  diff <- merge(group_mean, diff, by = "id")
+  
+  # 得到moderated effect size
+  
+  es <- effectsize(fit$t, nrow(info),
+                   (fit$df.prior + fit$df.residual))
+  
+  es <- data.frame(es = es[,"dprime"],
+                   es_var = es[,"vardprime"])
+  # 结果总结
+  
+  es <- es[diff$id,]
+  es <- cbind(diff, es)
+  rownames(es) <- NULL
+  es
+}
+
+
+
+# 输出cellrank输入数据 ====================
+
+metacell.cellrank.input <- function(loom.name = name,
+                                    metacell.info = info,
+                                    output.file = output.file) {
+  library(loomR)
+  library(data.table)
+  
+  # 读取loom文件
+  
+  data <- connect(filename = loom.name,
+                  mode = "r+", skip.validate = TRUE)
+  
+  # 提取行列名
+  
+  gene.names <- data[["row_attrs/Gene"]][]
+  cell.names <- data[['col_attrs/CellID']][]
+  
+  # 提取矩阵
+  
+  full.matrix <- data[['matrix']][,]
+  splice <- data[['layers/spliced']][,]
+  unsplice <- data[['layers/unspliced']][,]
+  
+  
+  # 统一loom来源细胞名 (针对不同情况修改) --------------------
+  
+  info <- read.table(metacell.info, header = T, sep = '\t')
+  
+  # head(info$id)
+  # head(cell.names)
+  
+  # info$id <- gsub('_',"-F:", info$id, fixed = T)
+  info$id <- gsub('HC0',"HCC0", info$id, fixed = T)
+  info$id <- gsub('_',"-F:", info$id, fixed = T)
+  info$id <- gsub('-1',"x", info$id, fixed = T)
+  
+  
+  # 处理基础矩阵 --------------------
+  
+  rownames(full.matrix) = cell.names
+  colnames(full.matrix) = gene.names
+  matrix <- full.matrix[info$id,]
+  
+  # 标准化数据
+  
+  sum <- apply(matrix, 1, sum)
+  matrix_norml <- log(matrix/sum*10000+1)
+  metacell <- unique(info$metacell)
+  
+  meta_matrix <- do.call(rbind, lapply(metacell,function(i){
+    submat <- matrix_norml[info$id[info$metacell==i],]
+    submat <- apply(submat, 2, mean)
+    return(submat)
+  }))
+  
+  rownames(meta_matrix) <- metacell
+  colnames(meta_matrix) <- gene.names
+  
+  # 保存结果
+  
+  output = paste0(output.file, "/matrix.txt")
+  fwrite(meta_matrix, output, sep = "\t", row.names = T)
+  
+  
+  # 处理splice矩阵 --------------------
+  
+  rownames(splice) = cell.names
+  colnames(splice) = gene.names
+  matrix <- splice[info$id,]
+  
+  # 标准化数据
+  
+  sum <- apply(matrix, 1, sum)
+  matrix_norml <- log(matrix/sum*10000+1)
+  metacell <- unique(info$metacell)
+  
+  meta_matrix <- do.call(rbind, lapply(metacell, function(i){
+    submat <- matrix_norml[info$id[info$metacell==i],]
+    submat <- apply(submat, 2, mean)
+    return(submat)
+  }))
+  
+  rownames(meta_matrix) <- metacell
+  colnames(meta_matrix) <- gene.names
+  
+  # 保存结果
+  
+  output = paste0(output.file, "/splice.txt")
+  fwrite(meta_matrix, output, sep = "\t", row.names = T)
+  
+  
+  # 处理unsplice矩阵 --------------------
+  
+  rownames(unsplice) = cell.names
+  colnames(unsplice) = gene.names
+  matrix <- unsplice[info$id,]
+  
+  # 标准化数据
+  
+  sum <- apply(matrix, 1, sum)
+  matrix_norml <- log(matrix/sum*10000+1)
+  metacell <- unique(info$metacell)
+  
+  meta_matrix <- do.call(rbind, lapply(metacell, function(i){
+    submat <- matrix_norml[info$id[info$metacell==i],]
+    submat <- apply(submat, 2, mean)
+    return(submat)
+  }))
+  
+  rownames(meta_matrix) <- metacell
+  colnames(meta_matrix) <- gene.names
+  
+  # 保存结果
+  
+  output = paste0(output.file, "/unsplice.txt")
+  fwrite(meta_matrix, output, sep = "\t", row.names = T)
+  
+  
+  # 保存其他数据 --------------------
+  
+  cellname = paste0(output.file, "/cellname.txt")
+  genename = paste0(output.file, "/genename.txt")
+  
+  write.table(metacell, cellname, row.names = F, sep = "\t")
+  write.table(gene.names, genename, row.names = F, sep = "\t")
+}
+
+
+
+# 输出cellrank输入数据 ====================
+
+loom_to_velocity <- function(datafilt = datafilt,
+                             loom.path = loom.path,
+                             output.file = output.file,
+                             coord.dm = "umap") {
+  library(loomR)
+  library(data.table)
+  
+  files <- list.files(loom.path, pattern = ".loom")
+  
+  # 得到info信息
+  
+  info <- datafilt@meta.data
+  ### 根据相应情况修改 ###########################################
+  rownames(info) <- substring(rownames(info), 1, 23) 
+  
+  
+  # 读入第一个数据 ==========
+  
+  # 读取loom文件
+  
+  loom.name = paste0(loom.path, "/", files[1])
+  data <- connect(filename = loom.name,
+                  mode = "r+", skip.validate = TRUE)
+  
+  # 提取行列名
+  
+  gene.names <- data[["row_attrs/Gene"]][]
+  cell.names <- data[['col_attrs/CellID']][]
+  
+  # 修改细胞名字
+  ### 根据相应情况修改 ###########################################
+  cell.names <- gsub(pattern = "-", replacement = "_", cell.names)
+  cell.names <- gsub(pattern = ":", replacement = "_", cell.names)
+  cell.names <- substring(cell.names, 1, 23)
+  
+  # 提取矩阵
+  
+  full.matrix <- data[['matrix']][,]
+  splice <- data[['layers/spliced']][,]
+  unsplice <- data[['layers/unspliced']][,]
+  
+  # 处理基础矩阵 ----------
+  
+  rownames(full.matrix) = cell.names
+  colnames(full.matrix) = gene.names
+  
+  common <- intersect(cell.names, rownames(info))
+  matrix <- full.matrix[common,]
+  
+  # 标准化数据
+  
+  sum <- apply(matrix, 1, sum)
+  matrix_norml <- log(matrix/sum*10000+1)
+  
+  # 处理splice矩阵 ----------
+  
+  rownames(splice) = cell.names
+  colnames(splice) = gene.names
+  splice <- splice[common,]
+  
+  # 标准化数据
+  
+  sum <- apply(splice, 1, sum)
+  splice_norml <- log(splice/sum*10000+1)
+  
+  # 处理unsplice矩阵 ----------
+  
+  rownames(unsplice) = cell.names
+  colnames(unsplice) = gene.names
+  unsplice <- unsplice[common,]
+  
+  # 标准化数据
+  
+  sum <- apply(unsplice, 1, sum)
+  unsplice_norml <- log(unsplice/sum*10000+1)
+  
+  
+  # 循环读入基础矩阵 ==========
+  
+  all_matrix_norml = matrix_norml
+  all_splice_norml = splice_norml
+  all_unsplice_norml = unsplice_norml
+  
+  for (i in 2:length(files)) {
+    
+    loom.name = paste0(loom.path, "/", files[i])
+    
+    # 读取loom文件
+    
+    data <- connect(filename = loom.name,
+                    mode = "r+", skip.validate = TRUE)
+    
+    # 提取行列名
+    
+    gene.names <- data[["row_attrs/Gene"]][]
+    cell.names <- data[['col_attrs/CellID']][]
+    
+    # 修改细胞名字 (每个样本都要进行相应的修改)
+    ### 根据相应情况修改 ###########################################
+    cell.names <- gsub(pattern = "-", replacement = "_", cell.names)
+    cell.names <- gsub(pattern = ":", replacement = "_", cell.names)
+    cell.names <- substring(cell.names, 1, 23)
+    
+    # 提取矩阵
+    
+    full.matrix <- data[['matrix']][,]
+    splice <- data[['layers/spliced']][,]
+    unsplice <- data[['layers/unspliced']][,]
+    
+    # 提取矩阵
+    
+    full.matrix <- data[['matrix']][,]
+    
+    # 处理基础矩阵 ----------
+    
+    rownames(full.matrix) = cell.names
+    colnames(full.matrix) = gene.names
+    
+    common <- intersect(cell.names, rownames(info))
+    matrix <- full.matrix[common,]
+    
+    # 标准化数据
+    
+    sum <- apply(matrix, 1, sum)
+    matrix_norml <- log(matrix/sum*10000+1)
+    
+    # 处理splice矩阵 ----------
+    
+    rownames(splice) = cell.names
+    colnames(splice) = gene.names
+    splice <- splice[common,]
+    
+    # 标准化数据
+    
+    sum <- apply(splice, 1, sum)
+    splice_norml <- log(splice/sum*10000+1)
+    
+    # 处理unsplice矩阵 ----------
+    
+    rownames(unsplice) = cell.names
+    colnames(unsplice) = gene.names
+    unsplice <- unsplice[common,]
+    
+    # 标准化数据
+    
+    sum <- apply(unsplice, 1, sum)
+    unsplice_norml <- log(unsplice/sum*10000+1)
+    
+    # 整合数据 ----------
+    
+    common <- intersect(colnames(all_matrix_norml), colnames(matrix_norml))
+    all_matrix_norml <- all_matrix_norml[,common]
+    all_splice_norml <- all_splice_norml[,common]
+    all_unsplice_norml <- all_unsplice_norml[,common]
+    matrix_norml <- matrix_norml[,common]
+    splice_norml <- splice_norml[,common]
+    unsplice_norml <- unsplice_norml[,common]
+    
+    all_matrix_norml <- rbind(all_matrix_norml, matrix_norml)
+    all_splice_norml <- rbind(all_splice_norml, splice_norml)
+    all_unsplice_norml <- rbind(all_unsplice_norml, unsplice_norml)
+  }
+  
+  all_gene.names <- colnames(all_matrix_norml)
+  all_cell.names <- rownames(all_matrix_norml)
+  
+  # 保存结果
+  
+  output = paste0(output.file, "/matrix.txt")
+  fwrite(all_matrix_norml, output, sep = "\t", row.names = T)
+  
+  output = paste0(output.file, "/splice.txt")
+  fwrite(all_splice_norml, output, sep = "\t", row.names = T)
+  
+  output = paste0(output.file, "/unsplice.txt")
+  fwrite(all_unsplice_norml, output, sep = "\t", row.names = T)
+  
+  # 保存其他结果
+  
+  cellname = paste0(output.file, "/cellname.txt")
+  genename = paste0(output.file, "/genename.txt")
+  write.table(all_cell.names, cellname, row.names = F, sep = "\t")
+  write.table(all_gene.names, genename, row.names = F, sep = "\t")
+  
+  # 提取降维坐标
+  
+  coord <- data.frame(Embeddings(datafilt, coord.dm))
+  ### 根据相应情况修改 ###########################################
+  rownames(coord) <- substring(rownames(coord), 1, 23)
+  
+  coord <- coord[all_cell.names,]
+  coord <- rownames_to_column(coord, var = "id")
+  name = paste0(output.file, "/coord.txt")
+  write.table(coord, name, sep = "\t", quote = F,
+              row.names = F, col.names = TRUE)
+  
+  # 提取注释数据
+  
+  info <- datafilt@meta.data
+  ### 根据相应情况修改 ###########################################
+  rownames(info) <- substring(rownames(info), 1, 23)
+  
+  info <- info[all_cell.names,]
+  name = paste0(output.file, "/info.txt")
+  write.table(info, name, sep = "\t", quote = F,
+              row.names = T, col.names = NA)
+}
+
+
+# 多组的箱线图 ====================
+
+common_boxplot2 <- function(input = input,
+                            output = name,
+                            show.point = TRUE, order = TRUE,
+                            decreasing = TRUE, rotate = 45,
+                            width = 7, height = 5) {
+  
+  library(ggbeeswarm)
+  library(ggplot2)
+  library(ggpubr)
+  
+  input <- input
+  
+  # 整理输入数据
+  
+  value1 = quantile(input$value, probs = c(0.005), na.rm = T)
+  value2 = quantile(input$value, probs = c(0.98), na.rm = T)
+  
+  # 设定颜色
+  
+  col <- c("#0070B2", "#5CB3DA", "#B8E3EA", "#DA1735", "#F15E4C", "#FF9F99",
+           "#A231A1", "#A37CB7", "#F2D7EE", "#B91372", "#E93B8C", "#ECB2C8",
+           "#FF7149", "#F7AE24", "#FBDD7E", "#679436", "#8BBE53", "#CDE391",
+           "#067D69", "#00A385", "#98D4C6", "#114B5F", "#028090", "#B2DBBF",
+           "#A23E48", "#CD6981", "#FBD0C0", "#788585", "#9CAEA9", "#CCDAD1")
+  
+  # 数据排序
+  
+  mean_data <- aggregate(input$value, by = list(input$type), FUN = median)
+  names(mean_data)[1:2] <- c("id", "mean_value")
+  
+  if (order == TRUE) {
+    levels <- mean_data$id[order(mean_data$mean_value, decreasing = decreasing)]
+    input$type <- factor(input$type, levels = levels)
+  }
+  
+  # 开始画图
+  
+  if (show.point == TRUE) {
+    
+    plot <- ggplot(input, aes(x = type, y = value, fill = type)) +
+      stat_boxplot(geom = "errorbar", width = 0, color = "black") +
+      geom_boxplot(alpha = 1, outlier.shape = NA, size = 0.7, width = 0.7) + 
+      
+      geom_quasirandom(width = 0.3, size = 2, alpha = 0.2) + 
+      scale_fill_manual(values=c(sample(col))) + 
+      
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none", # 去除图例
+            axis.text = element_text(colour = "black", size = 15), 
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+      labs(x = '', y= 'Gene activity',title = '') + 
+      rotate_x_text(rotate)
+    
+  } else {
+    
+    plot <- ggplot(input, aes(x = type, y = value, fill = type)) +
+      stat_boxplot(geom = "errorbar", width = 0.1, color = "black") +
+      geom_boxplot(alpha = 1, outlier.shape = NA, size = 0.7, width = 0.7) + 
+      scale_fill_manual(values = c(sample(col))) + 
+      
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none", # 去除图例
+            axis.text = element_text(colour = "black", size = 15), 
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+      labs(x = '', y= 'Gene activity',title = '') + 
+      coord_cartesian(ylim = c(value1, value2)) +  # 限制坐标轴高度
+      rotate_x_text(rotate)
+    
+  }
+  
+  # 输出结果
+  
+  if (is.null(output)) {
+    plot
+  } else {
+    ggsave(output, plot, width = width, height = height)
+  }
+}
+
+
+
+# 箱线图做法3 ====================
+
+common_boxplot3 <- function(input = input,
+                            output = name, rotate = 45,
+                            order = TRUE, decreasing = T,
+                            width = 7, height = 5) {
+  
+  library(ggbeeswarm)
+  library(ggplot2)
+  library(ggpubr)
+  
+  input <- input
+  
+  # 设定颜色
+  
+  col <- c("#0070B2", "#5CB3DA", "#B8E3EA", "#DA1735", "#F15E4C", "#FF9F99",
+           "#A231A1", "#A37CB7", "#F2D7EE", "#B91372", "#E93B8C", "#ECB2C8",
+           "#FF7149", "#F7AE24", "#FBDD7E", "#679436", "#8BBE53", "#CDE391",
+           "#067D69", "#00A385", "#98D4C6", "#114B5F", "#028090", "#B2DBBF",
+           "#A23E48", "#CD6981", "#FBD0C0", "#788585", "#9CAEA9", "#CCDAD1")
+  
+  # 数据排序
+  
+  mean_data <- aggregate(input$value, by = list(input$type), FUN = mean)
+  names(mean_data)[1:2] <- c("id", "mean_value")
+  
+  if (order == TRUE) {
+    levels <- mean_data$id[order(mean_data$mean_value, decreasing = decreasing)]
+    input$type <- factor(input$type, levels = levels)
+    mean_data$id <- factor(mean_data$id, levels = levels)
+  }
+  
+  # 开始画图
+  
+  if (length(unique(input$type)) < 36) {
+    
+    plot <- ggplot(mean_data, aes(x = id, y = mean_value)) +
+      
+      stat_summary(fun = median, 
+                   geom = "crossbar", 
+                   width = 0.5, linewidth = 0.5) + 
+      
+      geom_quasirandom(data = input, aes(x = type, y = value,
+                                         fill = type, color = type),
+                       width = 0, size = 3, alpha = 0.2) + 
+      scale_color_manual(values=c(sample(col))) + 
+      
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none", # 去除图例
+            axis.text = element_text(colour = "black", size = 15), 
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+      labs(x = '', y= 'Gene activity',title = '') + 
+      rotate_x_text(rotate)
+    
+  } else {
+    
+    plot <- ggplot(mean_data, aes(x = id, y = mean_value)) +
+      
+      stat_summary(fun = median, 
+                   geom = "crossbar", 
+                   width = 0.5, linewidth = 0.5) + 
+      
+      geom_quasirandom(data = input, aes(x = type, y = value),
+                       width = 0, size = 3, alpha = 0.2) + 
+      
+      theme_bw() + 
+      theme(panel.grid = element_blank(),
+            legend.position = "none", # 去除图例
+            axis.text = element_text(colour = "black", size = 15), 
+            axis.title = element_text(colour = "black", size = 15),
+            panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+      labs(x = '', y= 'Gene activity',title = '') + 
+      rotate_x_text(rotate)
+    
+  }
+  
+  # 输出结果
+  
+  if (is.null(output)) {
+    plot
+  } else {
+    ggsave(output, plot, width = width, height = height)
+  }
+}
+
+
+# 密度图可视化3 ====================
+
+dense_cytometry3 <- function(input = input,
+                             median.thres = T,
+                             density.bin = 30,
+                             density.h = 0.7,
+                             xcutoff = 0.5, ycutoff = 0.75) {
+  library(ggplot2)
+  input <- input
+  
+  
+  # 计算占比 ----------
+  
+  if (median.thres == T) {
+    xcutoff <- median(input[,1])
+    ycutoff <- median(input[,2])
+  }
+  
+  L_up <- round(sum(input[,1] < xcutoff & input[,2] > ycutoff) * 100 / nrow(input), 2)
+  L_dn <- round(sum(input[,1] < xcutoff & input[,2] < ycutoff) * 100 / nrow(input), 2)
+  R_up <- round(sum(input[,1] > xcutoff & input[,2] > ycutoff) * 100 / nrow(input), 2)
+  R_dn <- round(sum(input[,1] > xcutoff & input[,2] < ycutoff) * 100 / nrow(input), 2)
+  
+  
+  # 开始画图 ----------
+  
+  ggplot(input, aes(input[,1], input[,2])) +
+    
+    stat_density2d(aes(alpha = ..level.., fill = ..level..),
+                   contour_var = "ndensity",
+                   bins = 50, h = density.h, geom = "polygon") + 
+    
+    geom_density2d(size = 0.1, colour = "black", alpha = 0.7,
+                   contour_var = "ndensity",
+                   bins = density.bin,
+                   h = density.h) + 
+    
+    scale_fill_gradientn(colours = rev(c("#360E24","#5D1A58","#723692","#795CC3",
+                                         "#7487E0", "#7EB0E4","#AAD2E3","#E6F1F1"))) +
+    
+    # 整体风格
+    
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+    labs(x = colnames(input)[1], y = colnames(input)[2], title = '') + 
+    scale_color_gradientn(colors = col) + 
+    
+    scale_x_continuous(expand = c(0,0)) + # 不留边框
+    scale_y_continuous(expand = c(0,0)) + 
+    
+    # 添加分割线
+    
+    geom_vline(xintercept = xcutoff, color = "black", linetype = "dashed", lwd = 0.75) + 
+    geom_hline(yintercept = ycutoff, color = "black", linetype = "dashed", lwd = 0.75) + 
+    
+    # 添加标签
+    
+    annotate(geom = "text", x = -Inf, y = Inf, size = 5,
+             hjust = -0.2, vjust = 2, label = paste0("L up: ", L_up, "%")) + 
+    annotate(geom = "text", x = -Inf, y = -Inf, size = 5, 
+             hjust = -0.2, vjust = -2, label = paste0("L dn: ", L_dn, "%")) + 
+    annotate(geom = "text", x = Inf, y = Inf, size = 5, 
+             hjust = 1.2, vjust = 2, label = paste0("R up: ", R_up, "%")) + 
+    annotate(geom = "text", x = Inf, y = -Inf, size = 5, 
+             hjust = 1.2, vjust = -2, label = paste0("R dn: ", R_dn, "%")) + 
+    guides(col = guide_none())
+}
+
+
+
+# 流式密度图 ====================
+
+dense_cytometry <- function(input = input,
+                            pt.size = 0.75,
+                            color = "rainbow",
+                            median.thres = T,
+                            density.bin = 30,
+                            density.h = 0.7,
+                            xcutoff = 0.5, ycutoff = 0.75) {
+  library(ggplot2)
+  
+  input <- input
+  
+  # 设定颜色
+  
+  if (color == "parula") {
+    col <- colorRampPalette(c("#352A87","#343EB1","#1558D9","#036CE0","#107AD9",
+                              "#1387D3","#0997D1","#06A4C9","#0CADBB","#23B4A9",
+                              "#43BB97","#6ABE83","#8FBF73","#AEBD66","#CBBB5B",
+                              "#E6B94F","#FDBE3C","#FBCF2C","#F5E21E","#F9FB0E"))(100)
+    
+  } else if (color == "kovesi") {
+    col <- colorRampPalette(c("#1B0084","#1B099A","#1C14AE","#1C20C0","#1F2DCE",
+                              "#233DD6","#2950CE","#2E68AB","#377989","#3F876A",
+                              "#46954D","#53A036","#65AB26","#7BB41A","#95BE16",
+                              "#AFC61C","#C6CE26","#DAD636","#EAE04E","#F1EC74",
+                              "#F8F7AF","#FFFFFF"))(100)
+    
+  } else if (color == "ocean.haline") {
+    col <- colorRampPalette(c("#2A186C","#2E1B87","#2B229F","#1D35A1","#11459A",
+                              "#0C5294","#115D8F","#19678C","#22718A","#2B7A89",
+                              "#328388","#388D88","#3E9886","#44A284","#4CAC80",
+                              "#55B67A","#62BF72","#73C869","#8AD060","#A4D75C",
+                              "#BEDC62","#D5E171","#EAE784","#FDEF9A"))(100)
+    
+  } else if (color == "ocean.dense") {
+    col <- colorRampPalette(c("#360E24","#5D1A58","#723692","#795CC3",
+                              "#7487E0", "#7EB0E4","#AAD2E3","#E6F1F1"))(100)
+    
+  } else if (color == "magma") {
+    col <- c(colorRampPalette(c(magma(323, begin = 0.15)[1]))(10),
+             magma(323, begin = 0.18))
+    
+  } else if (color == "white2blue") {
+    col <- colorRampPalette(c("#FBF4F8","#E5E0ED","#BFC6DD","#8CADCC",
+                              "#4E92BA","#1871A8","#085889","#003758"))(100)
+    
+  } else if (color == "blue2red") {
+    col <- colorRampPalette(c("#0070b2","#009bc7","#5ec7dd",
+                              "#b8e3ea","#f3f3f1","#fccdb9",
+                              "#f79676","#f15e4c","#da1735"))(100)
+    
+  } else if (color == "rainbow") {
+    col <- colorRampPalette(c("#343391","#0064af","#0090cc","#00b6db","#01b7c2",
+                              "#53c0a3","#8dcb8a","#bbd967","#fbd324","#f6bd25",
+                              "#f4a02e","#ed6f32","#ea5c2e","#d5452f","#c02e2f",
+                              "#8b2a21"))(100)
+  }
+  
+  
+  # 密度散点图可视化 ----------
+  
+  get_density <- function(x, y, ...) {
+    dens <- MASS::kde2d(x, y, ...)
+    ix <- findInterval(x, dens$x)
+    iy <- findInterval(y, dens$y)
+    ii <- cbind(ix, iy)
+    return(dens$z[ii])
+  }
+  
+  # 计算每个点密度
+  
+  input$dens <- get_density(input[,1], input[,2], n = 1000)
+  input$dens <- input$dens / max(input$dens)
+  
+  
+  # 计算占比 ----------
+  
+  if (median.thres == T) {
+    xcutoff <- median(input[,1])
+    ycutoff <- median(input[,2])
+  }
+  
+  L_up <- round(sum(input[,1] < xcutoff & input[,2] > ycutoff) * 100 / nrow(input), 2)
+  L_dn <- round(sum(input[,1] < xcutoff & input[,2] < ycutoff) * 100 / nrow(input), 2)
+  R_up <- round(sum(input[,1] > xcutoff & input[,2] > ycutoff) * 100 / nrow(input), 2)
+  R_dn <- round(sum(input[,1] > xcutoff & input[,2] < ycutoff) * 100 / nrow(input), 2)
+  
+  
+  # 开始画图 ----------
+  
+  ggplot(input, aes(input[,1], input[,2])) +
+    
+    geom_density2d(size = 0.35, alpha = 0.1,
+                   colour = "black", bins = density.bin, h = density.h) + 
+    geom_point(aes(color = dens), size = pt.size) + 
+    
+    # 整体风格
+    
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+    labs(x = colnames(input)[1], y = colnames(input)[2], title = '') + 
+    scale_color_gradientn(colors = col) + 
+    
+    scale_x_continuous(expand = c(0,0)) + # 不留边框
+    scale_y_continuous(expand = c(0,0)) + 
+    
+    # 添加分割线
+    
+    geom_vline(xintercept = xcutoff, color = "black", linetype = "dashed", lwd = 0.75) + 
+    geom_hline(yintercept = ycutoff, color = "black", linetype = "dashed", lwd = 0.75) + 
+    
+    # 添加标签
+    
+    annotate(geom = "text", x = -Inf, y = Inf, size = 5,
+             hjust = -0.2, vjust = 2, label = paste0("L up: ", L_up, "%")) + 
+    annotate(geom = "text", x = -Inf, y = -Inf, size = 5, 
+             hjust = -0.2, vjust = -2, label = paste0("L dn: ", L_dn, "%")) + 
+    annotate(geom = "text", x = Inf, y = Inf, size = 5, 
+             hjust = 1.2, vjust = 2, label = paste0("R up: ", R_up, "%")) + 
+    annotate(geom = "text", x = Inf, y = -Inf, size = 5, 
+             hjust = 1.2, vjust = -2, label = paste0("R dn: ", R_dn, "%")) + 
+    guides(col = guide_none())
+}
+
+
+
+# 返回一个过滤低表达基因的矩阵 ====================
+
+metacell_aracne <- function(data = data,
+                            resolution = 30,
+                            cluster.name = "metacell",
+                            filter.gene = TRUE){
+  library(Seurat)
+  library(tibble)
+  
+  # 标准化 ----------
+  
+  data <- NormalizeData(data, scale.factor = 10000,
+                        normalization.method = "LogNormalize")
+  
+  data <- FindVariableFeatures(data, nfeatures = 2000, 
+                               selection.method = "vst")
+  
+  data <- ScaleData(data, features = VariableFeatures(data))
+  
+  # 进行聚类 ----------
+  
+  data <- RunPCA(data, assay = 'RNA', slot = 'scale.data')
+  data <- FindNeighbors(data, dims = 1:20, k.param = 10, reduction = "pca")
+  data <- FindClusters(data, resolution = resolution, n.iter = 10)
+  
+  # 重命名亚群名字 
+  
+  data$cluster <- paste0(cluster.name, "_", data$seurat_clusters)
+  
+  # 计算bulk表达 ----------
+  
+  metadata <- AverageExpression(data, group.by = "cluster",
+                                slot = "data", return.seurat = FALSE)[[1]]
+  
+  # 过滤低表达基因 ----------
+  
+  if (filter.gene == TRUE) {
+    metadata[!((rowSums(metadata == 0) > 0.75*ncol(metadata))),]
+  } else {
+    metadata
+  }
+}
+
+
+
+# 单细胞数据得到circ_plot图 ====================
+
+seurat_circ_prop <- function(datafilt = datafilt,
+                             group = "treatment",
+                             cluster = "celltype",
+                             xlab_order = NULL,
+                             ncol = 2) {
+  library(Seurat)
+  library(ggplot2)
+  library(gtools)
+  library(cowplot)
+  
+  # 环状图函数
+  
+  circ_prop <- function(data) {
+    
+    library(ggplot2)
+    
+    data <- data.frame(data)
+    names(data)[1:2] <- c("type", "n")
+    data$fraction = data$n / sum(data$n)
+    data$ymax = cumsum(data$fraction)
+    data$ymin = c(0, head(data$ymax, n = -1))
+    
+    data = data[order(data$n, decreasing = TRUE),]
+    myLabel = as.vector(data$type)   
+    myLabel = paste(myLabel, "(", round(data$n / sum(data$n) * 100, 2), "%)", sep = "")   
+    
+    ggplot(data = data, aes(fill = type, ymax = ymax, ymin = ymin, xmax = 4, xmin = 3)) +
+      geom_rect(colour = "grey30", show_guide = TRUE) + 
+      scale_fill_manual(values = c(col)) + 
+      coord_polar(theta = "y") +
+      labs(x = "", y = "", title = "") + 
+      xlim(2.5,NA) +
+      theme_bw() +
+      theme(panel.grid=element_blank()) + ## 去掉白色外框
+      theme(axis.text=element_blank()) + ## 把图旁边的标签去掉
+      theme(axis.ticks=element_blank()) + ## 去掉左上角的坐标刻度线
+      theme(panel.border=element_blank())## 去掉最外层的正方形边框
+  }
+  
+  # 整理数据
+  
+  info <- datafilt@meta.data
+  info <- data.frame(group = info[,group],
+                     cluster = info[,cluster])
+  
+  input <- data.frame(table(info$group, info$cluster))
+  names(input) <- c("group", "cluster", "prop")
+  
+  # 设置颜色
+  
+  number <- length(unique(input$cluster))
+  
+  if (number < 16) {
+    col <- c("#fbd324","#bbd967","#8dcb8a","#53c0a3","#01b7c2","#31A6C6",
+             "#0090cc","#0070b2","#784B8F","#9D478D","#716299","#A25F60",
+             "#C5456B","#D6654E","#E08D4E","#EABB63")
+  } else {
+    col <- c("#fbd324","#bbd967","#8dcb8a","#53c0a3","#01b7c2","#31A6C6",
+             "#0090cc","#0070b2","#784B8F","#9D478D","#716299","#A25F60",
+             "#C5456B","#D6654E","#E08D4E","#EABB63")
+    col <- colorRampPalette(col)(number)
+  }
+  
+  # 调整排序
+  
+  if (is.character(xlab_order) == TRUE) {
+    select = xlab_order
+  } else {select = unique(input$group)}
+  
+  # 开始画图
+  
+  all_plots <- lapply(select, function(i){
+    
+    subinput <- input[input$group == i,]
+    subinput <- subinput[,-1]
+    plot <- circ_prop(subinput) + ggtitle(i)
+    plot
+  })
+  
+  plot_grid(plotlist = all_plots, ncol = ncol)
+}
+
+
+# GSEA分析 ====================
+
+gsea_analysis <- function(input = input,
+                          source = path,
+                          geneset = NULL,
+                          set.min = 5,
+                          set.max = 1000) {
+  
+  library(clusterProfiler)
+  library(enrichplot)
+  library(gridExtra)
+  library(msigdbr)
+  options(connectionObserver = NULL)
+  
+  # 处理注释信息
+  
+  if (is.null(geneset)) {
+    
+    if (is.data.frame(source)) {
+      
+      sig_list = source
+      
+    } else {
+      
+      sig_list <- read.table(source, sep = ",", header = F,
+                             row.names = 1, na.strings = "")
+      
+      sig_list <- lapply(rownames(sig_list), function(i){
+        subdata <- t(sig_list[i,])[,1]
+        subdata <- data.frame(term = i, gene = subdata)
+      })
+      
+      sig_list <- do.call(rbind, sig_list)
+      sig_list <- na.omit(sig_list)
+      
+    }
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- data.frame(term = genesets[,2], gene = genesets[,1])
+    
+  }
+  
+  # 整理数据
+  
+  input <- input[order(input$value, decreasing = T),]
+  data <- input$value
+  names(data) <- input$id
+  
+  # 开始进行GSEA分析
+  
+  kk <- GSEA(data, TERM2GENE = sig_list,
+             minGSSize = set.min, maxGSSize = set.max,
+             pvalueCutoff = 1, nPermSimple = 10000, eps = 0)
+  
+  # 结果整理
+  
+  result <- data.frame(id = kk$Description, 
+                       ES = kk$enrichmentScore,
+                       NES = kk$NES, 
+                       pvalue = kk$pvalue, 
+                       FDR = kk$p.adjust, 
+                       setsize = kk$setSize, 
+                       leading_prop = kk$leading_edge,
+                       leading_gene = kk$core_enrichment)
+  
+  result$leading_prop <- do.call(rbind, strsplit(result$leading_prop, ','))[,1]
+  result$leading_prop <- do.call(rbind, strsplit(result$leading_prop, '='))[,2]
+  
+  # 结果输出
+  
+  result <- result[order(result$NES, decreasing = T),]
+  result
+}
+
+

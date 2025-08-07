@@ -1,0 +1,9 @@
+.onAttach <- function(libname, pkgname) {
+
+  packageStartupMessage("### =============================================================== ###")
+
+  packageStartupMessage("Created by Jiajun Li, Undergraduate.")
+  packageStartupMessage("Steven would like to thank Dr.Yang (Yang Chen, phD.) for his kind help.")
+
+  packageStartupMessage("### =============================================================== ###")
+}

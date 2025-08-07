@@ -1,0 +1,32 @@
+
+
+d.deg.hep53.4 <- read.delim("~/Steven Lijiajun/交大仁济肿瘤所/HCC 差异分析火山图/d.deg-hep53.4.tsv")
+
+select <- NULL
+d.deg.hep53.4 <- d.deg.hep53.4[,c("Gene","log2FC","FDR")]
+colnames(d.deg.hep53.4) <- c("id","logfc","pvalue")
+
+P1 <- common_volcano_plot(input = d.deg.hep53.4,
+                                output = "~/Steven Lijiajun/交大仁济肿瘤所/HCC 差异分析火山图/d.deg.hep53.4.pdf",
+                                thres.p = 0.05,
+                                thres.fc = 1,
+                                topn = 5,
+                                marker = select,
+                                label.size = 5,
+                                width = 8, height = 7)
+
+
+d.deg.p53.myc <- read.delim("~/Steven Lijiajun/交大仁济肿瘤所/HCC 差异分析火山图/d.deg-p53-myc.tsv")
+
+select <- NULL
+d.deg.p53.myc <- d.deg.p53.myc[,c("Gene","log2FC","FDR")]
+colnames(d.deg.p53.myc) <- c("id","logfc","pvalue")
+
+P2 <- common_volcano_plot(input = d.deg.p53.myc,
+                          output = "~/Steven Lijiajun/交大仁济肿瘤所/HCC 差异分析火山图/d.deg.p53.myc.pdf",
+                          thres.p = 0.05,
+                          thres.fc = 1,
+                          topn = 5,
+                          marker = select,
+                          label.size = 5,
+                          width = 8, height = 7)
