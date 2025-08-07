@@ -115,7 +115,7 @@ meta <- me_pathwayanalysis(
 To assess pathway-specific activity across individual samples, **single-sample GSEA (ssGSEA)** can be applied using the `GSVA` package.
 
 ### 🔧 Required Input
-- `data_new`: A **gene expression matrix** (rows: genes, columns: samples)
+- `input`: A **gene expression matrix** (rows: genes, columns: samples)
 - `inst/extdata/all_genesets_gem.rds`: Precompiled gene sets (`subsystem`, `metabolite`)
 
 ---
