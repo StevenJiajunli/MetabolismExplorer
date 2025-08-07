@@ -18,4 +18,4 @@
 Just provide your **expression matrix** and **sample classification**.
 
 🚀 **What you get:**  
-The tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
+This tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
