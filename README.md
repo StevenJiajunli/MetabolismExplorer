@@ -20,6 +20,35 @@ Just provide your **expression matrix** and **sample classification**.
 🚀 **What you get:**  
 This tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
 
+✅ **Before you start:**  
+Before using MetabolismExplorer, **make sure the following R packages are installed**. You can use the following code to automatically install all required dependencies.
+
+
+```r
+# CRAN packages
+cran_packages <- c("gridExtra", "reshape2", "ggplot2", "dplyr")
+
+for (pkg in cran_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+# Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+bioc_packages <- c("limma", "metaMA", "statmod", "clusterProfiler", "enrichplot", "msigdbr")
+
+for (pkg in bioc_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    BiocManager::install(pkg)
+  }
+}
+```
+
+
 ## 📥 Input Format
 
 ### 1. Expression Matrix (`input`)
