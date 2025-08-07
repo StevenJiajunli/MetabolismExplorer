@@ -1,12 +1,12 @@
 Package: MetabolismExplorer
-Title: What the Package Does (One Line, Title Case)
+Title: Exploring Metabolism Patterns Based on Transcriptomic Data
 Version: 0.0.0.9000
 Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"),
-           comment = c(ORCID = "YOUR-ORCID-ID"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+    person("Jiajun", "Li", email = "11697636896@qq.com", role = c("aut", "cre"))
+Description: This package provides tools to analyze and visualize metabolic pathway activities
+    based on bulk or single-cell transcriptomic data, integrating differential expression,
+    enrichment analysis, and pathway-based scoring approaches.
+License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
@@ -18,4 +18,6 @@ Imports:
     enrichplot,
     gridExtra,
     msigdbr,
-    reshape2
+    reshape2,
+    ggplot2,
+    dplyr
