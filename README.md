@@ -2,7 +2,8 @@
 
 
 
-olismExplorer is a powerful tool designed for high-throughput metabolic state analysis.
+
+MetabolismExplorer is a powerful tool designed for high-throughput metabolic state analysis.
 
 🔍 We have curated:
 
