@@ -78,7 +78,7 @@ diff <- me_diffprep(
 # Perform pathway enrichment analysis
 meta <- me_pathwayanalysis(
   input = diff,
-  geneset = "subsystem",  # options: subsystem, metabolism, metabolite
+  geneset = "subsystem",  # options: subsystem, metabolite
   set.min = 5,
   set.max = 1000
 )
