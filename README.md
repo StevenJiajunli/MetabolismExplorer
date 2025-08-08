@@ -20,6 +20,9 @@ Just provide your **expression matrix** and **sample classification**.
 🚀 **What you get:**  
 This tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
 
+<img width="986" height="364" alt="image" src="https://github.com/user-attachments/assets/7892af8a-9f09-4c93-ae24-0cc577c205c9" />
+
+
 ✅ **Before you start:**  
 Before using MetabolismExplorer, **make sure the following R packages are installed**. You can use the following code to automatically install all required dependencies.
 
