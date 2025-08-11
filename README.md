@@ -14,3 +14,5 @@ Just provide your **expression matrix** and **sample classification**.
 
 🚀 **What you get:**  
 This tool will **automatically identify differential metabolic states**, helping you **uncover key biological insights** and **guide your downstream research** with ease and precision.
+
+<img width="974" height="358" alt="image" src="https://github.com/user-attachments/assets/05b5d488-058d-4e2f-b8d0-f926fcc216e8" />
