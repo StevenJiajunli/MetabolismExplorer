@@ -161,9 +161,20 @@ lollipop_plot <- me_lollipop_plot(input = meta)
 
 <div align="center">
 
-| Volcano plot | Lollipop plot |
-|--------------|---------------|
-| <img src="https://github.com/user-attachments/assets/4c1e0f1c-17a6-4944-ab0e-433435e830ff" width="400"/> | <img src="https://github.com/user-attachments/assets/569a701c-74dc-4937-8ff3-40f8bd9824de" width="400"/> |
+<table>
+  <tr>
+    <th>Volcano plot</th>
+    <th>Lollipop plot</th>
+  </tr>
+  <tr>
+    <td>
+      <img src="https://github.com/user-attachments/assets/4c1e0f1c-17a6-4944-ab0e-433435e830ff" width="400" alt="Volcano plot"/>
+    </td>
+    <td>
+      <img src="https://github.com/user-attachments/assets/569a701c-74dc-4937-8ff3-40f8bd9824de" width="400" alt="Lollipop plot"/>
+    </td>
+  </tr>
+</table>
 
 </div>
 
@@ -213,23 +224,36 @@ leading_plot
 
 ## 📊 Example Output
 
-**Leading genes**
-| id     | rank  |
-|--------|-------|
-| TBX6   | 23740 |
-| ALG5   | 23741 |
-| SORD   | 23918 |
-| MECR   | 24394 |
-| XYLB   | 25366 |
-| UXS1   | 25580 |
-| CRYL1  | 27376 |
-| DCXR   | 27789 |
-| AKR7A2 | 28687 |
-| AKR1B1 | 28774 |
+<div align="center">
 
-**Leading-edge analysis visualization**
-
-<img width="1174" height="812" alt="image" src="https://github.com/user-attachments/assets/bfbbfaf5-4082-4093-9d5c-4e768e96e195" />
+<table>
+  <tr>
+    <th>Leading genes</th>
+    <th>Leading-edge analysis visualization</th>
+  </tr>
+  <tr>
+    <!-- 左边基因表 -->
+    <td valign="top">
+      <table>
+        <tr><th>id</th><th>rank</th></tr>
+        <tr><td>TBX6</td><td>23740</td></tr>
+        <tr><td>ALG5</td><td>23741</td></tr>
+        <tr><td>SORD</td><td>23918</td></tr>
+        <tr><td>MECR</td><td>24394</td></tr>
+        <tr><td>XYLB</td><td>25366</td></tr>
+        <tr><td>UXS1</td><td>25580</td></tr>
+        <tr><td>CRYL1</td><td>27376</td></tr>
+        <tr><td>DCXR</td><td>27789</td></tr>
+        <tr><td>AKR7A2</td><td>28687</td></tr>
+        <tr><td>AKR1B1</td><td>28774</td></tr>
+      </table>
+    </td>
+    <!-- 右边图片 -->
+    <td valign="top">
+      <img src="https://github.com/user-attachments/assets/bfbbfaf5-4082-4093-9d5c-4e768e96e195" width="520" alt="Leading-edge analysis visualization"/>
+    </td>
+  </tr>
+</table>
 
 
 
