@@ -15,32 +15,32 @@
 #' @export
 #'
 #' @examples me_diffprep(data = data, info = info, group1 = "R", group2 = "NR", filter = FALSE)
-me_diffprep <- function(data = data,
+me_diffprep <- function(data = data, 
                        info = info,
                        group1 = "R",
                        group2 = "NR",
                        filter = FALSE) {
 
-  # 默认情况都是group1 - group2
+  # By default, the comparison is group1 - group2
 
   library(limma)
   library(metaMA)
   library(statmod)
 
-  # 确保排序一致
+  # Ensure consistent sample order
 
   common <- intersect(colnames(data), info$id)
   info <- info[info$id %in% common,]
   data <- data[,info$id]
   data <- as.matrix(data)
 
-  # 排除变异度小的基因
+  # Remove genes with low variance
 
   var <- do.call(rbind, lapply(rownames(data), function(i){
     data.frame(id = i, value = var(data[i,]))}))
   data <- data[var$id[var$value > 0],]
 
-  # 构建矩阵
+  # Build design matrix
 
   grade <- factor(info[,2], levels = c(group2, group1))
   design <- model.matrix(~0 + grade)
@@ -48,19 +48,19 @@ me_diffprep <- function(data = data,
   rownames(design) <- info$id
   colnames(design) <- gsub(pattern = "grade", replacement = "",
                            x = colnames(design))
-  # 对比矩阵
+  # Create contrast matrix
 
   cont.matrix <- as.matrix(c(-1, 1))
   rownames(cont.matrix) <- c(group2, group1)
   colnames(cont.matrix) <- paste0(group1, " - ", group2)
 
-  # 线性拟合
+  # Perform linear fitting
 
   fit <- lmFit(data, design)
   fit <- contrasts.fit(fit, cont.matrix)
   fit <- eBayes(fit, trend = TRUE, robust = TRUE)
 
-  # 得到差异基因
+  # Get differentially expressed genes
 
   diff <- topTable(fit, adjust = 'fdr',
                    coef = 1, n = Inf)
@@ -71,7 +71,7 @@ me_diffprep <- function(data = data,
                      pvalue = diff$P.Value,
                      FDR = diff$adj.P.Val)
 
-  # 得到分组平均值
+  # Calculate group means
 
   group_mean <- do.call(rbind, lapply(1:nrow(data), function(i){
 
@@ -90,18 +90,18 @@ me_diffprep <- function(data = data,
 
   colnames(group_mean)[2:3] <- c(group1, group2)
 
-  # 整合平均值结果
+  # Merge group means with differential expression results
 
   diff <- merge(group_mean, diff, by = "id")
 
-  # 得到moderated effect size
+  # Calculate moderated effect size
 
   es <- effectsize(fit$t, nrow(info),
                    (fit$df.prior + fit$df.residual))
 
   es <- data.frame(es = es[,"dprime"],
                    es_var = es[,"vardprime"])
-  # 结果总结
+  # Summarize results
 
   es <- es[diff$id,]
   es <- cbind(diff, es)
@@ -109,7 +109,3 @@ me_diffprep <- function(data = data,
   es
 
 }
-
-
-
-
