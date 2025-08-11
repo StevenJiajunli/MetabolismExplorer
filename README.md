@@ -51,6 +51,7 @@ for (pkg in bioc_packages) {
 }
 ```
 
+---
 
 ## 📥 Input Format
 
@@ -71,7 +72,7 @@ Example:
 | DUSP22  | 3.64       | 3.32       | 3.32       |
 | RPS28   | 11.44      | 10.98      | 12.81      |
 
----
+
 
 ### 2. Sample Group Information (`info`)
 
@@ -130,14 +131,14 @@ me_volcano_plot(input = meta,
 lollipop_plot <- me_lollipop_plot(input = meta)
 
 ```
----
+
 
 ## 📂 Available Gene Sets
 
 - **subsystem**: 134 metabolism-related gene sets
 - **metabolite**: 3,673 metabolite-associated gene sets
 
----
+
 
 ## 📊 Example Output
 
@@ -156,6 +157,8 @@ lollipop_plot <- me_lollipop_plot(input = meta)
 | Starch and sucrose metabolism         | 0.8482701 | 1.3576135 | 0.08438209 | 0.7440891 | 30      | 20%           | AMY1C/PYGL/GYG1/GBE1/GAA/...                          |
 | Estrogen metabolism                   | 0.7796301 | 1.3574625 | 0.07587076 | 0.7440891 | 66      | 20%           | MPO/GSTO1/CYP1B1/ALDH1A1/GST3/...                     |
 
+
+
 <div align="center">
 
 | Volcano plot | Lollipop plot |
@@ -167,6 +170,7 @@ lollipop_plot <- me_lollipop_plot(input = meta)
 
 
 ---
+
 
 
 ## 🚀 Usage 2: Leading edge analysis
@@ -206,7 +210,6 @@ leading_plot
 
 ```
 
----
 
 ## 📊 Example Output
 
@@ -228,7 +231,11 @@ leading_plot
 
 <img width="1174" height="812" alt="image" src="https://github.com/user-attachments/assets/bfbbfaf5-4082-4093-9d5c-4e768e96e195" />
 
+
+
 ---
+
+
 
 ## 🚀 Usage 3: ssGSEA
 
@@ -238,7 +245,6 @@ To assess pathway-specific activity across individual samples, **single-sample G
 - `input`: A **gene expression matrix** (rows: genes, columns: samples)
 - `inst/extdata/all_genesets_gem.rds`: Precompiled gene sets (`subsystem`, `metabolite`)
 
----
 
 ### 🧬 Load Gene Sets and ssGSEA pipeline
 
