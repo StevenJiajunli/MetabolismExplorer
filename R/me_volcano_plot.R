@@ -35,58 +35,46 @@ me_volcano_plot <- function(input = meta,
 
   colnames(input) <- c("id","logfc","pvalue")
 
-  # 修改过于小的P值
-
+  # Adjust extremely small P-values
   if (sum(input$pvalue == 0) > 0) {
     input$pvalue[input$pvalue == 0] <- 1e-300
   }
 
-  # 计算差异最大的基因
-
+  # Calculate the most differential genes
   input$max <- input$logfc * -log10(input$pvalue)
 
-  # 选择显著基因
-
+  # Select significant genes
   sigene_h <- input[input$pvalue < thres.p & input$logfc > thres.nes,]
   sigene_l <- input[input$pvalue < thres.p & input$logfc < -thres.nes,]
 
-  # 选择top基因
-
+  # Select top genes
   toph <- top_n(input, topn, max)
   topl <- top_n(input, -topn, max)
   topgene <- rbind(toph, topl)
 
-  # 选择marker基因
-
+  # Select marker genes
   select_gene <- input[input$id %in% marker,]
 
-
-  # 开始画图
-
+  # Create plot
   plot <- ggplot(data = input, aes(logfc, -log10(pvalue))) +
     geom_point(alpha = 0.5, size = 3, colour = "grey90") +
 
-    #画阈值分界线
-
+    # Add threshold lines
     geom_vline(xintercept = c(thres.nes), color = "black", linetype = "dashed", lwd = 0.75) +
     geom_vline(xintercept = c(-thres.nes), color = "black", linetype = "dashed", lwd = 0.75) +
     geom_hline(yintercept = -log10(thres.p), color = "black", linetype = "dashed", lwd = 0.75) +
 
-    # 差异基因
-
+    # Significant genes
     geom_point(data = sigene_h, alpha = 0.5, size = 3, color = "#dd897a") +
     geom_point(data = sigene_l, alpha = 0.5, size = 3, color = "#86b6da") +
 
-    # marker基因
-
+    # Marker genes
     geom_point(data = select_gene, alpha = 1, size = 3.5, colour = "#fcb040") +
 
-    # top label
-
+    # Top gene labels
     geom_text_repel(data = topgene, aes(label = id), size = label.size) +
 
-    # marker label
-
+    # Marker gene labels
     geom_text_repel(data = select_gene, aes(label=id), size = label.size) +
 
     theme_bw() +
@@ -95,10 +83,9 @@ me_volcano_plot <- function(input = meta,
           axis.title = element_text(colour = "black", size = 15),
           panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) +
 
-    labs(x = 'Log Fold Change',y= 'Log (P-value)',title = '')
+    labs(x = 'Log Fold Change', y= 'Log (P-value)', title = '')
 
-  # 输出结果
-
+  # Output result
   if (is.null(output)) {
     plot
   } else {
