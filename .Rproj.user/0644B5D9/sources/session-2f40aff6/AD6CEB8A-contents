@@ -1,0 +1,305 @@
+
+## Loading datasets ...
+
+Bm <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bm.rds")
+Bn <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bn.rds")
+ASC <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/ASC.rds")
+Bgc <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bgc.rds")
+Bcycling <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bcycling.rds")
+
+combined <- merge(Bm, y = list(Bn, ASC, Bgc, Bcycling))
+
+column_need <- c("orig.ident","nCount_RNA","nFeature_RNA","sample",
+                 "patient","sample_time","response","drug","tumor_type",
+                 "treatment","sample_site","cohort","celltype_major","celltype_minor")
+
+combined@meta.data <- combined@meta.data[,column_need]
+
+## 数据再清洗
+table(combined$response)
+combined <- subset(combined, subset = response != "NS")
+
+table(combined$sample_site)
+combined$sample_site[combined$sample_site == "normal"] <- "Normal"
+combined$sample_site[combined$sample_site == "tumor"] <- "Tumor"
+combined$sample_site[combined$sample_site == "PBMC"] <- "Blood"
+
+table(combined$sample_time)
+table(combined$tumor_type)
+
+# 背对背柱状图 R/NR
+prop_back2back(datafilt = Bm,
+               group = "response",
+               cluster = "celltype_minor",
+               order = TRUE)
+
+# 背对背柱状图 Pre/Post
+prop_back2back(datafilt = combined,
+               group = "sample_time",
+               cluster = "celltype_major",
+               order = TRUE)
+
+# 棒棒糖图 R/NR
+prop_back2back_lollipop(datafilt = Bm,
+                        group = "response",
+                        group1 = "R",
+                        group2 = "NR",
+                        cluster = "celltype_minor")
+
+# 棒棒糖图 Pre/Post
+prop_back2back_lollipop(datafilt = Bm,
+                        group = "sample_time",
+                        group1 = "post",
+                        group2 = "pre",
+                        cluster = "celltype_minor")
+
+# Bn
+
+dimplot_new(data = Bn,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+# Bm
+
+dimplot_new(data = Bm,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+MT1X <- subset(Bm, subset = celltype_minor == "Bm: MT1X")
+table(MT1X$cohort)
+
+# Bgc
+
+dimplot_new(data = Bgc,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+# ASC
+
+dimplot_new(data = ASC,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+# Bcycling
+
+dimplot_new(data = Bcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+## Bgc/Bcycling 重新降维聚类
+
+BgcBcycling <- merge(Bgc, y=list(Bcycling))
+
+dimplot_new(data = BgcBcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("seurat_clusters"))
+
+dimplot_new(data = BgcBcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("cohort"))
+
+BgcBcycling <- subset(BgcBcycling, idents = c(0:6))
+
+BgcBcycling <- NormalizeData(BgcBcycling, scale.factor = 10000,
+                             normalization.method = "LogNormalize")
+
+BgcBcycling <- FindVariableFeatures(BgcBcycling, nfeatures = nfeatures, 
+                                    selection.method = "vst")
+
+BgcBcycling <- ScaleData(BgcBcycling, features = VariableFeatures(BgcBcycling))
+
+BgcBcycling <- RunPCA(BgcBcycling, assay = 'RNA', slot = 'scale.data')
+
+BgcBcycling <- RunHarmony(BgcBcycling, group.by.vars = "sample",dims.use = 1:50,
+                          assay.use = "RNA")
+
+BgcBcycling <- FindNeighbors(BgcBcycling, k.param = neigh,
+                             dims = 1:ndim, reduction = "harmony")
+
+BgcBcycling <- FindClusters(BgcBcycling, resolution = res, n.iter = 50)
+
+BgcBcycling <- RunUMAP(BgcBcycling, dims = 1:ndim,
+                       n.neighbors = neigh, min.dist = dist, 
+                       reduction = "harmony", reduction.name = "umap_harmony")
+
+dimplot_new(data = BgcBcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("seurat_clusters"))
+
+dimplot_new(data = BgcBcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("cohort"))
+
+diff <- seurat_diffall(datafilt = BgcBcycling,
+                       group.by = "seurat_clusters",
+                       assay = "RNA",
+                       min.pct = 0.25,
+                       thres.fc = 0.25)
+
+BgcBcycling <- subset(BgcBcycling, idents = c(0:3,5:6))
+
+diff_loadingplot(diff = diff,
+                 topn = 15, 
+                 color = "#560047",
+                 output = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/00_meta/BgcBcycling.pdf")
+
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(BgcBcycling, features = "STMN1", reduction = "umap_harmony") + 
+  theme_bw() +  # Use a clean, white background
+  theme(
+    panel.grid = element_blank(),            # Remove grid lines
+    axis.ticks = element_blank(),            # Remove axis ticks
+    axis.text = element_blank(),             # Remove axis text
+    axis.title = element_text(colour = "black", size = 15),  # Customize axis title
+    plot.title = element_text(size = 17, hjust = 0.5),  # Customize plot title, center-align it
+    panel.border = element_blank(),          # Remove the panel border
+    legend.position = "right"                # Keep the color bar on the right
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  # Apply the custom color palette for continuous data
+  labs(x = ' ', y = ' ', title = "STMN1")  # Place the gene label "CD3D" as the plot title
+
+BgcBcycling@meta.data <- BgcBcycling@meta.data %>%
+  mutate(celltype_minor = recode(seurat_clusters,
+                               `0` = "Bgc: LZ-like",
+                               `2` = "Bgc: LZ-like",
+                               `1` = "Bgc: DZ-like",
+                               `3` = "Bgc: DZ-like",
+                               `5` = "Bgc: DZ-like",
+                               `6` = "ASC: Cycling"))
+
+dimplot_new(data = BgcBcycling,
+            reduction = "umap_harmony",
+            pt.size = 0.0000000001, label = F,
+            group.by = c("celltype_minor"))
+
+## Ro/e
+
+combined <- merge(Bm, y = list(Bn, ASC, BgcBcycling))
+
+column_need <- c("orig.ident","nCount_RNA","nFeature_RNA","sample",
+                 "patient","sample_time","response","drug","tumor_type",
+                 "treatment","sample_site","cohort","celltype_major","celltype_minor")
+
+combined@meta.data <- combined@meta.data[,column_need]
+
+## 数据再清洗
+table(combined$response)
+combined <- subset(combined, subset = response != "NS")
+
+table(combined$sample_site)
+combined$sample_site[combined$sample_site == "normal"] <- "Normal"
+combined$sample_site[combined$sample_site == "tumor"] <- "Tumor"
+combined$sample_site[combined$sample_site == "PBMC"] <- "Blood"
+
+table(combined$celltype_minor)
+
+
+library(Startrac)
+library(ggplot2)
+library(tictoc)
+library(ggpubr)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(tidyverse)
+library(sscVis)
+
+cellmeta <- combined@meta.data
+
+table(cellmeta$patient)
+table(cellmeta$sample_site)
+table(cellmeta$celltype_minor)
+table(cellmeta$sample_site)
+
+
+R_oe <- calTissueDist(cellmeta,
+                      byPatient = F,
+                      colname.cluster = "celltype_minor",
+                      colname.patient = "patient",
+                      colname.tissue = "sample_site",
+                      method = "chisq", 
+                      min.rowSum = 0)
+
+###数值
+col_fun <- colorRamp2(c(0, 1, 2), c("#709acb", "white", "#c93e3f"))
+at =  seq(0, 2, by = 0.5)
+Heatmap(as.matrix(R_oe),
+        show_heatmap_legend = T, 
+        cluster_rows = T, 
+        cluster_columns = T,
+        row_names_side = 'right', 
+        show_column_names = T,
+        show_row_names = T,
+        col = col_fun,
+        row_names_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 10),
+        heatmap_legend_param = list(
+          title = "R_o/e",
+          at =  seq(0, 2, by = 0.5),
+          labels =  seq(0, 2, by = 0.5),
+          legend_gp = gpar(fill = col_fun(at))
+        ),
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          grid.text(sprintf("%.2f", R_oe[i, j]), x, y, gp = gpar(fontsize = 8))
+        }
+)
+
+
+
+###+、-
+col_fun <- colorRamp2(c(0, 1, 2), c("white", "#ADD8E6", "#00008B"))
+at = seq(0, 2, by = 0.5)
+
+# 
+replace_with_symbol <- function(value) {
+  if (value > 1) {
+    "+++"
+  } else if (value > 0.8) {
+    "++"
+  } else if (value >= 0.2) {
+    "+"
+  } else if (value > 0) {
+    "+/-"
+  } else if (value == 0) {
+    "-"
+  } else {
+    as.character(value) # 处理意外情况
+  }
+}
+
+pdf("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/00_meta/ROE.pdf",onefile = FALSE,width=4,height=6)
+
+Heatmap(as.matrix(R_oe),
+        show_heatmap_legend = T, 
+        cluster_rows = T, 
+        cluster_columns = T,
+        row_names_side = 'right', 
+        show_column_names = T,
+        show_row_names = T,
+        col = col_fun,
+        row_names_gp = gpar(fontsize = 10),
+        column_names_gp = gpar(fontsize = 10),
+        heatmap_legend_param = list(
+          title = "R_o/e",
+          at = seq(0, 2, by = 0.5),
+          labels = seq(0, 2, by = 0.5),
+          legend_gp = gpar(fill = col_fun(at))
+        ),
+        cell_fun = function(j, i, x, y, width, height, fill) {
+          # 显示符号
+          grid.text(replace_with_symbol(R_oe[i, j]), x, y, gp = gpar(fontsize = 8))
+          # 可选：在小字体下显示原始数值（如果需要）
+          # grid.text(sprintf("\n\n%.2f", R_oe[i, j]), x, y, gp = gpar(fontsize = 6))
+        }
+)
+dev.off()

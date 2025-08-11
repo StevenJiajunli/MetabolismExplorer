@@ -1,0 +1,7 @@
+
+## 读取NMF结果
+
+load("~/Steven Lijiajun/Steven/NMF/1. ICC_Nature/nmf_results.Rdata")
+
+NMFs_per_sample = nmf(x = Expression_matrix, rank = 4:9, method="snmf/r", nrun = 10)
+

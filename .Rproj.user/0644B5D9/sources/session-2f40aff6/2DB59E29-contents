@@ -1,0 +1,32 @@
+simi_metaprogram <- function(input,
+                             cutoff.i = 0.2,      # 相似性二值阈值(调大→类更少)
+                             min.size = 5,        # 最小类规模(调大→类更少)
+                             h = 0.25,            # 用高度切树(与 k 二选一)
+                             k = NULL,            # 指定目标类数(如 6)，优先于 h
+                             relabel = TRUE) {    # 是否把编号连续化为 meta1..n
+  # 二值化
+  input_b <- ifelse(input > cutoff.i, 1, 0)
+  
+  # 层次聚类
+  hc <- hclust(as.dist(1 - input_b), method = "average")
+  
+  # 切树：优先用 k，否则用 h
+  cl <- if (!is.null(k)) cutree(hc, k = k) else cutree(hc, h = h)
+  
+  # 结果表
+  df <- data.frame(id = rownames(input_b), cluster = cl, check.names = FALSE)
+  
+  # 过滤小类
+  tab <- table(df$cluster)
+  keep <- names(tab)[tab >= min.size]
+  df <- df[df$cluster %in% keep, , drop = FALSE]
+  
+  # 连续化与按规模排序
+  if (relabel && nrow(df) > 0) {
+    ord <- names(sort(tab[keep], decreasing = TRUE))
+    df$cluster <- factor(df$cluster, levels = ord,
+                         labels = paste0("meta", seq_along(ord)))
+    df <- df[order(df$cluster), , drop = FALSE]
+  }
+  df
+}

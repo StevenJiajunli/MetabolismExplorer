@@ -1,0 +1,250 @@
+
+library(Seurat)
+library(plyr)
+library(scater)
+library(stringr)
+library(future)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+library(SingleCellExperiment)
+library(data.table)
+library(tibble)
+library(harmony)
+
+
+
+mycol <- c(brewer.pal(5,"Set1"), brewer.pal(8,"Set2"),
+           brewer.pal(11,"Set3"), brewer.pal(12,"Paired"),
+           brewer.pal(8,"Accent"), brewer.pal(11,"Spectral"),
+           brewer.pal(11,"BrBG"), brewer.pal(11,"PiYG"),
+           brewer.pal(11,"PuOr"),brewer.pal(11,"RdBu"))
+
+
+source("/home/ug1268/tools/mouse_sc/public_function_mouse.R")
+source("/home/ug1268/tools/mouse_sc/citeseq_function.R")
+source("/home/ug1268/program/ICB/cohorts/autocluster.R")
+
+
+## 数据读取
+
+setwd("~/Steven Lijiajun/Steven/ICC_Nature队列")
+
+ICC_from_tumor_Nature <- readRDS("~/Steven Lijiajun/Steven/ICC_Nature队列/ICC_from_tumor_Nature.rds")
+
+datafilt <- ICC_from_tumor_Nature
+
+## Fig.sna
+
+nfeatures = 2000
+ndim = 15
+neigh = 100
+dist = 0.5
+res = 0.2
+
+datafilt <- RunHarmony(datafilt, group.by.vars = "sample",dims.use = 1:50,
+                       assay.use = "RNA")
+
+datafilt <- FindNeighbors(datafilt, k.param = neigh,
+                          dims = 1:ndim, reduction = "harmony")
+
+datafilt <- FindClusters(datafilt, resolution = 0.3, n.iter = 50)
+
+datafilt <- RunUMAP(datafilt, dims = 1:ndim,
+                    n.neighbors = neigh, min.dist = dist, 
+                    reduction = "harmony", reduction.name = "umap_harmony")
+
+dimplot_new(data = datafilt,
+            reduction = "umap_harmony",
+            pt.size = 1, label = T,
+            group.by = c("celltype_sig2"))
+
+dimplot_new(data = datafilt,
+            reduction = "umap_harmony",
+            pt.size = 1, label = T,
+            group.by = c("seurat_clusters"))
+
+datafilt <- subset(datafilt, idents = c(0:7,9))
+
+datafilt <- FindNeighbors(datafilt, k.param = neigh,
+                          dims = 1:ndim, reduction = "harmony")
+
+datafilt <- FindClusters(datafilt, resolution = 0.3, n.iter = 50)
+
+datafilt <- RunUMAP(datafilt, dims = 1:ndim,
+                    n.neighbors = neigh, min.dist = dist, 
+                    reduction = "harmony", reduction.name = "umap_harmony")
+
+datafilt@meta.data <- datafilt@meta.data %>%
+  mutate(celltype_major = recode(celltype_sig2,
+                                 "tumor" = "Epithelial"))
+
+dimplot_new(data = datafilt,
+            reduction = "umap_harmony",
+            pt.size = 1, label = T,
+            group.by = c("celltype_major"))
+
+dimplot_new(data = datafilt,
+            reduction = "umap_harmony",
+            pt.size = 1, label = F,
+            group.by = c("TNM_stage"))
+
+## tumor
+
+datafilt_tumor <- subset(datafilt, subset = celltype_sig2 == "tumor")
+
+datafilt_tumor <- FindNeighbors(datafilt_tumor, k.param = neigh,
+                                dims = 1:ndim, reduction = "harmony")
+
+datafilt_tumor <- FindClusters(datafilt_tumor, resolution = 0.3, n.iter = 50)
+
+datafilt_tumor <- RunUMAP(datafilt_tumor, dims = 1:ndim,
+                          n.neighbors = neigh, min.dist = dist, 
+                          reduction = "harmony", reduction.name = "umap_harmony")
+
+dimplot_new(data = datafilt_tumor,
+            reduction = "umap_harmony",
+            pt.size = 0.000000000000000000000000000000000001, label = F,
+            group.by = c("TNM_stage"))
+
+dimplot_new(data = datafilt_tumor,
+            reduction = "umap_harmony",
+            pt.size = 0.000000000000000000000000000000000001, label = F,
+            group.by = c("etiology"))
+
+## dotplot
+
+source('~/Steven Lijiajun/Steven/预后模型研究/BRCA_端粒+干性/scRNA-seq部分/图谱部分/ks_scAverExp.R')
+source('~/Steven Lijiajun/Steven/预后模型研究/BRCA_端粒+干性/scRNA-seq部分/图谱部分/ks_scDotplot.R')
+
+unique(datafilt@meta.data$celltype_major)
+
+# dotplot
+genes <- list(
+  "Bcell" = c("CD79A","MS4A1"),
+  "CD4T" = c("CD3D","CD3E","CD4","CCR7","IL7R"),
+  "CD8T" = c("CD8A","CD8B","GZMA","GZMB"),
+  "DC" = c("ITGAX","IL3RA","CD80"),
+  "Endothelial" = c("PECAM1","VWF","CLEC1B"),
+  "Epithelial" = c("KRT7", "KRT8", "EPCAM", "KRT19"),
+  "Fibroblast" = c("COL1A2","DCN","ACTA2"),
+  "Macro" = c("C1QA", "C1QB","LYZ","CD68","APOE"),
+  "MAST" = c("KIT","CST3","CPA3","TPSAB1","TPSB2"),
+  "Mono" = c("CD14","S100A9","S100A8"),
+  "Neutrophil" = c("CSF3R"),
+  "NKcell" = c("KLRB1","KLRD1","NKG7"),
+  "Treg" = c("IL10","FOXP3")
+)
+
+
+featureSets <- genes 
+
+datafilt@meta.data$celltype <- datafilt$celltype_major
+
+Idents(datafilt) <- datafilt$celltype_major
+
+Exp_scRNA <- ks_scAverExp(obj = datafilt,
+                          features = featureSets,
+                          CellTypes = unique(datafilt$celltype))
+
+
+#rm(BC10,BC11,BC16,BC17,BC2,BC20,BC21,BC22,BC5,BC3,BC6)
+#rm(scRNA.anchors,scRNAa,scRNA1)
+#rm(scRNAlist)
+
+#BiocManager::install("dittoSeq")
+library(dittoSeq)
+
+cols<- c("Bcell" = "#A6D719",
+         "CD4T" = "#176EBF",
+         "CD8T" = "#00A8DE",
+         "DC" = "#AEE0E8",
+         'Endothelial' = "#00A9A3",
+         "Epithelial" = "#FBD324",
+         "Fibroblast" = "#F28A24",
+         'Macro' = "#A52828",
+         "MAST" = "#A37CB7",
+         "Mono" = "#F2D7EE",
+         "Neutrophil" = "#CD6981",
+         "NKcell" = "#FBD0C0",
+         "Treg" = "#F15E4C")
+
+scRNA_dotplot = ks_scDotplot(obj = datafilt,
+                             features = featureSets,
+                             CellTypes = unique(datafilt$celltype),
+                             avgPctMat= Exp_scRNA,
+                             pal = cols)
+
+
+select <- c("CD3D","CD4","CD8A","KLRB1","MS4A1","CD14","FCER1G","ITGAX")
+select2 <- c("GZMB","ISG15","KIT", "FOXP3","COL1A1","PECAM1","S100A9","CSF3R")
+
+for (i in select2) {
+  
+  # 创建绘图
+  setwd("~/Steven Lijiajun/Steven/ICC_Nature队列/0.2 landscape")
+  
+  my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+  
+  fig2 = FeaturePlot(datafilt, features = i, reduction = "umap_harmony",
+                     pt.size = 1, raster=TRUE) + 
+    theme_bw() +  # Use a clean, white background
+    theme(
+      panel.grid = element_blank(),            # Remove grid lines
+      axis.ticks = element_blank(),            # Remove axis ticks
+      axis.text = element_blank(),             # Remove axis text
+      axis.title = element_text(colour = "black", size = 15),  # Customize axis title
+      plot.title = element_text(size = 17, hjust = 0.5),  # Customize plot title, center-align it
+      panel.border = element_blank(),          # Remove the panel border
+      legend.position = "right"                # Keep the color bar on the right
+    ) + 
+    scale_color_gradientn(colors = my_colors) +  # Apply the custom color palette for continuous data
+    labs(x = ' ', y = ' ', title = i)  # Place the gene label "CD3D" as the plot title
+  
+  # 构建文件名
+  file_name <- paste0(i, "umap.png")
+  
+  # 保存图形到 PDF 文件
+  ggsave(file_name, fig2, height = 3.5, width = 4.3)
+}
+
+## 柱状比例图
+
+input <- data.frame(Var1 = datafilt$sample,
+                    Var2 = datafilt$celltype)
+
+input <- as.data.frame(table(Var1 = datafilt$sample,
+                             Var2 = datafilt$celltype))
+
+p1 <- prop_plot_hca(input = input,
+                    rotate = 45,
+                    decreasing = T,
+                    species = "human")
+
+p1
+
+## 比例图
+
+table(datafilt$TNM_stage)
+
+datafilt@meta.data <- datafilt@meta.data %>%
+  mutate(TNM_stage_iiv = recode(TNM_stage,
+                                "IVA" = "IV",
+                                "IVB" = "IV"))
+
+prop_back2back(datafilt = datafilt,
+               group = "TNM_stage_iiv",
+               cluster = "celltype",
+               order = TRUE)
+
+prop_back2back_lollipop(datafilt = datafilt,
+                        group = "TNM_stage_iiv",
+                        group1 = "I",
+                        group2 = "IV",
+                        cluster = "celltype")
+
+

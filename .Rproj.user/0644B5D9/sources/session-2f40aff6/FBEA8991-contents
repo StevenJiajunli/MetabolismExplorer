@@ -1,0 +1,33 @@
+
+devtools::install_github("StevenJiajunli/MetabolismExplorer", force = TRUE)
+
+library(MetabolismExplorer)
+
+SLE_cohorts_diffexp <- readRDS("/home/ug1268u3/Steven Lijiajun/Steven/SLE/1. SLE CD14_Mono GSHstate/机器学习_113机器学习方案/SLE_cohorts_diffexp_10.rds")
+
+GSE65391 <- SLE_cohorts_diffexp$GSE81622
+
+info <- data.frame(id = rownames(GSE65391),
+                   type = GSE65391$type)
+
+input <- as.data.frame(t(GSE65391))
+input <- input[-1,]
+input <- as.data.frame(lapply(input, function(col) as.numeric(col)),
+                       row.names = rownames(input))
+
+
+diff <- me_diffprep(data = input,
+                    info = info,
+                    group1 = "SLE",
+                    group2 = "HC")
+
+meta <- me_pathwayanalysis(input = diff,
+                           geneset = "subsystem",
+                           set.min = 5,
+                           set.max = 1000)
+
+# 找到 R 包中 .rds 文件的完整路径
+path <- system.file("extdata", "all_genesets_gem.rds", package = "MetabolismExplorer")
+
+# 读取 rds 文件内容
+all_genesets <- readRDS(path)

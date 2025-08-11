@@ -1,0 +1,341 @@
+library(NMF)
+library(Seurat)
+library(plyr)
+library(dplyr)
+library(scater)
+library(future)
+library(gtools)
+library(ggplot2)
+library(cowplot)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+
+
+source("/home/ug0302/CITEseq/public_data/citeseq_function.R")
+setwd("/home/ug0302/CITEseq")
+load("savedata/data1.Rdata")
+load("savedata/data2.Rdata")
+load("savedata/viper_results.Rdata")
+load("savedata/nmf_results.Rdata")
+
+
+# 选择蛋白数据 --------------------
+
+select_pro <- c("CD13", "CD24", "CD44", "CD49f", "CD54",
+                "CD73", "CD90", "CD117", "CD133", "CD326", "CD338",
+                "CD183", "CD184",
+                "CD47", "CD274", "CD155",
+                "IgG1", "IgG2a", "IgG2b")
+
+
+# sample-wise 相似性 (jaccard) =================================================
+
+allnmf <- do.call(rbind, lapply(allnmf_integ, function(i){i$topgene}))
+
+
+# 使用jaccard计算 --------------------
+
+simmat = matrix(nrow = nrow(allnmf),
+                ncol = nrow(allnmf))
+
+for(i in 1:(nrow(allnmf)-1)){
+  for(j in (i+1):nrow(allnmf)){
+
+    A = as.matrix(allnmf)[i,]
+    B = as.matrix(allnmf)[j,]
+
+    jaccard <- length(intersect(A, B))/length(union(A, B))
+    simmat[i,j] = jaccard
+    simmat[j,i] = jaccard
+  }
+}
+
+dimnames(simmat) <- list(rownames(allnmf), rownames(allnmf))
+diag(simmat) <- 1
+
+
+# all program 可视化 --------------------
+
+pdf(file = "figure/05_nmf2/heatmap_simprogram.pdf",
+    width = 17, height = 15)
+
+heatmap_cor(simmat, color = "ocean.deep",
+            rev.col = TRUE, show.name = TRUE)
+dev.off()
+
+
+
+# meta program分析 =============================================================
+
+metap <- simi_metaprogram(simmat,
+                          cutoff.i = 0.05,
+                          cutoff.n = 3)
+
+# write.table(metap, "figure/05_nmf2/metap.txt",
+#             sep = "\t", quote = F, row.names = F, col.names = T)
+
+metap <- read.table("figure/05_nmf2/metap.txt",
+                    sep = "\t", header = T, check.names = F)
+
+pdf(file = "figure/05_nmf2/heatmap_metaprogram.pdf",
+    width = 8, height = 7)
+
+simi_metaprogram_plot1(simmat[metap$id,metap$id],
+                       show.name = TRUE,
+                       cluster = FALSE)
+dev.off()
+
+
+
+# NMF - protein 相关性 --------------------
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 相关性计算
+
+allcor_pro <- do.call(cbind, lapply(names(allnmf), function(i){
+
+  subpro <- allpromc[[i]]
+  subpro <- t(GetAssayData(subpro, slot = "data"))[,select_pro]
+
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subpro),]
+  cor_betweenAB(subnmf, subpro)
+}))
+
+
+pdf(file = "figure/05_nmf2/heatmap_metaprogram_pro.pdf",
+    width = 5, height = 7)
+
+heatmap_cor(t(allcor_pro[,metap$id]), color = "blue2red",
+            rev.col = FALSE, show.name = TRUE, cluster = FALSE)
+dev.off()
+
+
+# program - sig 相关性 --------------------
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 相关性计算
+
+allcor_sig <- do.call(cbind, lapply(names(allnmf), function(i){
+
+  cellp <- allnmf[[i]]
+  path <- "/home/ug0302/CITEseq/public_data/tumor_sig6.csv"
+
+  sig <- metacell_score(metacell = allexpmc[[i]],
+                        rawcell = allexp[[i]], source = path,
+                        geneset = NULL)
+
+  cor_betweenAB(cellp, sig)
+}))
+
+
+pdf(file = "figure/05_nmf2/heatmap_metaprogram_sig.pdf",
+    width = 6, height = 9)
+
+heatmap_cor(t(allcor_sig[,metap$id]), color = "parula",
+            rev.col = FALSE, show.name = TRUE, cluster = FALSE)
+dev.off()
+
+
+# meta program 可视化 --------------------
+
+# pdf(file = "figure/05_nmf2/heatmap_metaprogram.pdf",
+#     width = 8, height = 7)
+
+# simi_metaprogram_plot2(simmat,
+#                        cutoff.i = 0.1,
+#                        cutoff.n = 3,
+#                        rev.col = TRUE,
+#                        color = "ocean.dense")
+# dev.off()
+
+
+
+# sample-wise 相似性 (protein) =================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# 相关性计算 --------------------
+
+allcor <- do.call(cbind, lapply(names(allnmf), function(i){
+
+  subpro <- allpromc[[i]]
+  subpro <- t(GetAssayData(subpro, slot = "data"))[,select_pro]
+
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subpro),]
+  cor_betweenAB(subnmf, subpro)
+}))
+
+allcor <- cor(allcor)
+
+
+# all program 可视化 --------------------
+
+pdf(file = "figure/05_nmf2/heatmap_simprogram_protein.pdf",
+    width = 8, height = 7)
+
+heatmap_cor(allcor, color = "ocean.deep",
+            rev.col = TRUE, show.name = TRUE)
+dev.off()
+
+
+# meta program 可视化 --------------------
+
+pdf(file = "figure/05_nmf2/heatmap_metaprogram_protein.pdf",
+    width = 8, height = 7)
+
+simi_metaprogram(allcor, cutoff.i = 0.5, cutoff.n = 1,
+                 rev.col = TRUE, color = "ocean.dense",
+                 col.lim = c(-1, 1))
+dev.off()
+
+
+
+# program - signature 相关性聚类 ===============================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# program - sig 相关性 --------------------
+
+anno_cor <- do.call(cbind, lapply(names(allnmf), function(i){
+
+  cellp <- allnmf[[i]]
+  path <- "/home/ug0302/CITEseq/public_data/tumor_sig6.csv"
+
+  sig <- metacell_score(metacell = allexpmc[[i]],
+                        rawcell = allexp[[i]], source = path,
+                        geneset = NULL)
+
+  cor_betweenAB(cellp, sig)
+}))
+
+
+# 聚类热图可视化 --------------------
+
+pdf(file = "figure/05_nmf3/heatmap_cor_program_sig.pdf",
+    width = 12, height = 9)
+
+heatmap_cluster(anno_cor, color = "blue2red",
+                dicho.thres = 0.5, number.k = 5)
+dev.off()
+
+
+
+# program genes 可视化 =========================================================
+
+# 提取数据
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$gene)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 开始画图
+
+for (j in names(allnmf)) {
+
+  all_plots <- loading_allplot(allnmf[[j]], topn = 15,
+                               color = "#560047")
+
+  name = paste0("figure/05_nmf2/gene_loadings_", j, ".pdf")
+  export_loadingplot(all_plots = all_plots,
+                     ncol = 5, output = name)
+}
+
+
+
+# NMF - TF 相似性 ==============================================================
+
+# 提取NMF数据
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# 选择基因 --------------------
+
+select_tf <- read.table("public_data/viper_anno.txt", sep = "\t", header = T)
+select_tf <- select_tf$id[select_tf$type == "TF"]
+
+
+# 相关性计算 --------------------
+
+allcor <- lapply(names(allnmf), function(i){
+
+  subvip <- allvipmc[[i]]
+  subvip <- t(as.matrix(GetAssayData(subvip, slot = "data")))
+  subvip <- subvip[,colnames(subvip) %in% select_tf]
+
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subvip),]
+  cor_betweenAB(subnmf, subvip)
+})
+
+names(allcor) <- names(allnmf)
+
+
+# gene loading 可视化 --------------------
+
+for (j in names(allcor)) {
+
+  all_plots <- loading_allplot(allcor[[j]], topn = 15,
+                               color = "#0070B2")
+
+  name = paste0("figure/05_nmf2/TF_loadings_", j, ".pdf")
+  export_loadingplot(all_plots = all_plots,
+                     ncol = 5, output = name)
+}
+
+
+
+# metaprogram在C1和C2之间的差异 ================================================
+
+metap <- read.table("figure/05_nmf2/metap.txt",
+                    sep = "\t", header = T, check.names = F)
+
+metap$id <- do.call(rbind, strsplit(metap$id, '_'))[,2]
+
+
+library(factoextra)
+
+# 层次聚类分型 ----------
+
+datapro <- meanexpression(megpromc, slot = "data", group = "sample")
+datapro <- scale(datapro)
+
+# 判断分群数量
+
+dist <- dist(t(datapro), method = "euclidean")
+result_hc <- hclust(d = dist, method = "ward.D2")
+fviz_dend(result_hc, cex = 0.6)
+
+# 确定分群
+
+class <- cutree(result_hc, h = 6)
+class <- data.frame(id = names(class),
+                    type = paste0("C", unname(class)))
+
+input <- merge(metap, class, by = "id")
+allprop <- lapply(unique(input$cluster), function(i){
+
+  subinput <- input[input$cluster == i,]
+  prop <- data.frame(table(subinput$type))
+  plot <- circ_prop(prop)
+  plot + ggtitle(i)
+})
+
+library(cowplot)
+allprop <- plot_grid(plotlist = allprop, ncol = 5)
+
+ggsave("figure/05_nmf2/C1_C2_prop.pdf",
+       allprop, width = 10, height = 6)
+

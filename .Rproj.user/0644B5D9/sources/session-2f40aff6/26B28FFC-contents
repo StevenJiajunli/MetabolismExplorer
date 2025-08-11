@@ -1,0 +1,53 @@
+build_metacells <- function(rawcell_all,
+                            split.by = "sample",         # 样本列
+                            cluster.col = "seurat_clusters", # 若不存在就自动跑 clustering
+                            assay = DefaultAssay(rawcell_all),
+                            target_size = 50,            # 每个 metacell 目标细胞数
+                            resolution = 0.6) {
+  
+  # 按样本拆分
+  objs <- SplitObject(rawcell_all, split.by = split.by)
+  
+  mc_list <- lapply(objs, function(obj) {
+    # 若没有簇信息，自动跑一遍基础流程得到 seurat_clusters
+    if (!(cluster.col %in% colnames(obj@meta.data))) {
+      obj <- FindVariableFeatures(obj, verbose = FALSE)
+      obj <- ScaleData(obj, verbose = FALSE)
+      obj <- RunPCA(obj, verbose = FALSE)
+      obj <- FindNeighbors(obj, dims = 1:30, verbose = FALSE)
+      obj <- FindClusters(obj, resolution = resolution, verbose = FALSE)
+      cluster.col <- "seurat_clusters"
+    }
+    
+    meta <- obj@meta.data
+    counts <- GetAssayData(obj, assay = assay, slot = "counts")
+    
+    # 在每个簇内把细胞按 target_size 分块
+    meta$.__cluster__ <- meta[[cluster.col]]
+    meta$.__idx__ <- ave(seq_len(nrow(meta)), meta$.__cluster__,
+                         FUN = function(ix)
+                           rep(seq_len(ceiling(length(ix)/target_size)),
+                               each = target_size, length.out = length(ix)))
+    meta$metacell_id <- paste0(meta$.__cluster__, "_MC", meta$.__idx__)
+    
+    # 分组 → 列合并（行是基因，列是 metacell）
+    groups <- split(rownames(meta), meta$metacell_id)
+    mc_counts <- do.call(cbind, lapply(groups, function(cells) {
+      Matrix::rowSums(counts[, cells, drop = FALSE])
+    }))
+    
+    colnames(mc_counts) <- names(groups)
+    
+    # 生成以“metacell”为列的 Seurat 对象
+    mc_obj <- CreateSeuratObject(counts = mc_counts, assay = assay)
+    
+    # 在 meta.data 里保存原始 cell 列表（逗号分隔）
+    mc_obj@meta.data$cell_id <- vapply(groups, function(cells) paste(cells, collapse = ","), "")
+    
+    # 清理临时列名
+    mc_obj
+  })
+  
+  # 返回：按样本的 metacell Seurat 对象 list
+  mc_list
+}

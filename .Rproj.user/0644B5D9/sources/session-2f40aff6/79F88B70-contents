@@ -1,0 +1,764 @@
+remove.packages("Seurat")
+devtools::install_github("satijalab/seurat@v4.3.0")
+
+library(Seurat)
+library(plyr)
+library(scater)
+library(stringr)
+library(future)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+library(SingleCellExperiment)
+library(harmony)
+
+mycol <- c(brewer.pal(5,"Set1"), brewer.pal(8,"Set2"),
+           brewer.pal(11,"Set3"), brewer.pal(12,"Paired"),
+           brewer.pal(8,"Accent"), brewer.pal(11,"Spectral"),
+           brewer.pal(11,"BrBG"), brewer.pal(11,"PiYG"),
+           brewer.pal(11,"PuOr"),brewer.pal(11,"RdBu"))
+
+
+setwd("/home/ug1268/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/")
+source("/home/ug1268/tools/mouse_sc/public_function_mouse.R")
+source("/home/ug1268/tools/mouse_sc/citeseq_function.R")
+
+#将三个文件按照对应的格式分别读取进来
+library(Matrix)
+
+mtx=readMM('data/GSE243013_NSCLC_immune_scRNA_counts.mtx.gz')
+mtx[1:4,1:4]
+dim(mtx)
+mtx <- t(mtx)
+
+cl=read.csv("data/raw_data/GSE243013_barcodes.csv")
+head(cl)
+
+rl=read.csv("data/raw_data/GSE243013_genes.csv.gz")
+head(rl) 
+
+#整合矩阵信息
+rownames(mtx)=rl$geneSymbol
+colnames(mtx)=cl$barcode
+
+#创建seurat对象
+sce.all = CreateSeuratObject(counts =  mtx , 
+                             min.cells = 5,
+                             min.features = 500 )
+sce.all[1:4,1:4]
+
+###################################整理临床数据
+data <- read.csv("/home/ug1268/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/data/raw_data/GSE243013_NSCLC_immune_scRNA_metadata.csv")
+
+column_need <- c("orig.ident","nCount_RNA","nFeature_RNA","sample",
+                 "patient","sample_time","response","drug",
+                 "tumor_type","treatment","sample_site","cohort")
+
+data$orig.ident <- "10X"
+
+library(stringr)
+colnames(data)
+# 保留value列中包含"P"的行
+data <- data[grepl("P", data$sampleID), ]
+table(data$sampleID)
+
+data$sample <- data$sampleID
+data$patient <- data$sample
+data$sample_time <- "post"
+table(data$pathological_response)
+table(data$radiological_response)
+
+data <- data[-which(data$pathological_response == "unknowm"),]
+data$response <- ifelse(data$pathological_response == "non-MPR","NR","R")
+
+table(data$chemotherapy)
+table(data$anti.PD1_therapy)
+table(data$targeted_therapy)
+data <- data[-which(data$anti.PD1_therapy == "unknowm"),]
+
+data$treatment <- "ICB_chemo"
+data$drug <- paste0(data$anti.PD1_therapy,"_",data$chemotherapy,"_",data$targeted_therapy)
+data$sample_site <- "tumor"
+table(data$cancer_type)
+data$tumor_type <- "NSCLC"
+data$cohort <- "GSE243013"
+
+meta <- sce.all@meta.data
+meta$cellID <- rownames(meta)
+
+samples <- intersect(meta$cellID,data$cellID)
+rownames(data) <- data$cellID
+
+meta <- meta[samples,]
+data <- data[samples,]
+
+meta <- cbind(meta,data)
+meta <- meta[,column_need]
+
+sce.all <- sce.all[,rownames(meta)]
+
+sce.all@meta.data <- meta
+
+# 分布查看
+scRNA_qc_plot <- qc_plot(data = sce.all)
+
+rm(mtx)
+sce.all <- qc_filter(data = sce.all,
+                      nFeature_dn = 100,
+                      nFeature_up = 7000,
+                      nCount_dn = 500,
+                      nCount_up = 40000,
+                      mito_up = 25,
+                      ribo_dn = 1,
+                      ribo_up = 50,
+                      gene_filter = 2,
+                      species = "human")  
+
+
+saveRDS(sce.all, file = "/home/ug1268/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/ICB_2025_NSCLC_GSE243013_all.rds")
+
+
+datafilt <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/ICB_2025_NSCLC_GSE243013_all.rds")
+
+ncol(datafilt)
+data_part_1 <- datafilt[,1:400000]
+gc()
+
+data_part_2 <- datafilt[,400001:800000]
+gc()
+
+data_part_3 <- datafilt[,800001:ncol(datafilt)]
+gc()
+
+setwd("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013")
+
+saveRDS(data_part_1, file = "data/data_part_1.rds")
+gc()
+
+saveRDS(data_part_2, file = "data/data_part_2.rds")
+gc()
+
+saveRDS(data_part_3, file = "data/data_part_3.rds")
+gc()
+
+
+
+
+###########################data_part_1
+data_part_1 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_1.rds")
+
+library(scGate)
+scGate_DB <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/scGate_DB.rds")
+data_B1 <- scGate(data_part_1, model = scGate_DB$human$generic$PanBcell,
+                  pos.thr = 0.25, ncores = 6)
+# 21:29-21:57
+
+data_B1 <- data_B1[,data_B1$is.pure %in% c("Pure")]
+
+saveRDS(data_B1, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B1.rds")
+
+gc()
+
+
+# seurat pipeline
+
+data_B <- data_B1
+
+plan(sequential)
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+data_B <- NormalizeData(data_B, scale.factor = 10000,
+                        normalization.method = "LogNormalize")
+
+data_B <- FindVariableFeatures(data_B, nfeatures = nfeatures, 
+                               selection.method = "vst")
+
+data_B <- ScaleData(data_B, features = VariableFeatures(data_B))
+
+data_B <- RunPCA(data_B, assay = 'RNA', slot = 'scale.data')
+
+data_B <- RunHarmony(data_B, group.by.vars = "sample",dims.use = 1:50,
+                     assay.use = "RNA")
+
+data_B <- FindNeighbors(data_B, k.param = neigh,
+                        dims = 1:ndim, reduction = "harmony")
+
+data_B <- FindClusters(data_B, resolution = 0.4, n.iter = 50)
+
+data_B <- RunUMAP(data_B, dims = 1:ndim,
+                  n.neighbors = neigh, min.dist = dist, 
+                  reduction = "harmony", reduction.name = "umap_harmony")
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = F,
+            group.by = c("sample"))
+
+
+# CD20+B cell
+select <- c("MS4A1", "CD19", "TCL1A", "CD27", "TNFRSF13B")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = FALSE,
+                        outlier.rm = F)
+
+
+plot
+
+lapply(plot, is.null)
+lapply(plot, class)
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "B")
+
+combined_plot
+
+# Plasma cell
+select <- c("MZB1", "XBP1", "IGHG1", "IGHA1", "MT1X","SDC1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Plasma")
+
+combined_plot
+
+# Other cells
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ","CD86","C1QA", "PECAM1", "COL1A1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] + plot[[7]] + plot[[8]] +
+  plot_layout(ncol = 4) +
+  plot_annotation(title = "Other cells")
+
+combined_plot
+
+# 细胞质控
+
+exp <- GetAssayData(data_B,slot = "count")
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ", "CD86", "C1QA", "PECAM1", "COL1A1")
+exp_need <- exp[select,]
+exp_need <- as.data.frame(exp_need)
+exp_need <- as.data.frame(t(exp_need))
+names <- which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0)
+
+exp_need <- exp_need[which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0),]
+
+data_B <- data_B[,rownames(exp_need)]
+
+
+library(harmony)
+
+data_B <- RunHarmony(data_B,group.by.vars="sample",dims.use = 1:50,assay.use ="RNA")
+
+data_B <- FindNeighbors(data_B,k.param = neigh,dims =1:ndim,reduction="harmony")
+
+data_B <- FindClusters(data_B, resolution=res, n.iter =50)
+
+data_B <- RunUMAP(data_B, dims =1:ndim,
+                  n.neighbors=neigh,
+                  min.dist = dist,
+                  reduction ="harmony",
+                  reduction.name = "umap_harmony")
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(data_B, features = "TCL1A", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "TCL1A")
+
+
+
+# 保存数据
+
+saveRDS(data_B, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B1_final.rds")
+
+
+data_part_2 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_2.rds")
+
+library(scGate)
+scGate_DB <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/scGate_DB.rds")
+data_B2 <- scGate(data_part_2 , model = scGate_DB$human$generic$PanBcell,
+                  pos.thr = 0.25, ncores = 6)
+
+data_B2 <- data_B2[,data_B2$is.pure %in% c("Pure")]
+
+saveRDS(data_B2, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B2.rds")
+
+gc()
+
+# seurat pipeline
+
+data_B <- data_B2
+
+plan(sequential)
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+data_B <- NormalizeData(data_B, scale.factor = 10000,
+                        normalization.method = "LogNormalize")
+
+data_B <- FindVariableFeatures(data_B, nfeatures = nfeatures, 
+                               selection.method = "vst")
+
+data_B <- ScaleData(data_B, features = VariableFeatures(data_B))
+
+data_B <- RunPCA(data_B, assay = 'RNA', slot = 'scale.data')
+
+data_B <- RunHarmony(data_B, group.by.vars = "sample",dims.use = 1:50,
+                     assay.use = "RNA")
+
+data_B <- FindNeighbors(data_B, k.param = neigh,
+                        dims = 1:ndim, reduction = "harmony")
+
+data_B <- FindClusters(data_B, resolution = 0.4, n.iter = 50)
+
+data_B <- RunUMAP(data_B, dims = 1:ndim,
+                  n.neighbors = neigh, min.dist = dist, 
+                  reduction = "harmony", reduction.name = "umap_harmony")
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = F,
+            group.by = c("sample"))
+
+
+# CD20+B cell
+select <- c("MS4A1", "CD19", "TCL1A", "CD27", "TNFRSF13B")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = FALSE,
+                        outlier.rm = F)
+
+
+plot
+
+lapply(plot, is.null)
+lapply(plot, class)
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "B")
+
+combined_plot
+
+# Plasma cell
+select <- c("MZB1", "XBP1", "IGHG1", "IGHA1", "MT1X","SDC1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Plasma")
+
+combined_plot
+
+# Other cells
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ","CD86","C1QA", "PECAM1", "COL1A1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] + plot[[7]] + plot[[8]] +
+  plot_layout(ncol = 4) +
+  plot_annotation(title = "Other cells")
+
+combined_plot
+
+# 细胞质控
+
+exp <- GetAssayData(data_B,slot = "count")
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ", "CD86", "C1QA", "PECAM1", "COL1A1")
+exp_need <- exp[select,]
+exp_need <- as.data.frame(exp_need)
+exp_need <- as.data.frame(t(exp_need))
+names <- which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0)
+
+exp_need <- exp_need[which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0),]
+
+data_B <- data_B[,rownames(exp_need)]
+
+
+library(harmony)
+
+data_B <- RunHarmony(data_B,group.by.vars="sample",dims.use = 1:50,assay.use ="RNA")
+
+data_B <- FindNeighbors(data_B,k.param = neigh,dims =1:ndim,reduction="harmony")
+
+data_B <- FindClusters(data_B, resolution=res, n.iter =50)
+
+data_B <- RunUMAP(data_B, dims =1:ndim,
+                  n.neighbors=neigh,
+                  min.dist = dist,
+                  reduction ="harmony",
+                  reduction.name = "umap_harmony")
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(data_B, features = "RGS13", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "RGS13")
+
+
+
+# 保存数据
+
+saveRDS(data_B, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B2_final.rds")
+
+
+#####################################
+data_part_3 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_3.rds")
+
+library(scGate)
+scGate_DB <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/scGate_DB.rds")
+data_B3 <- scGate(data_part_3 , model = scGate_DB$human$generic$PanBcell,
+                  pos.thr = 0.25, ncores = 6)
+
+saveRDS(data_B3, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B3.rds")
+
+data_B3 <- data_B3[,data_B3$is.pure %in% c("Pure")]
+
+
+gc()
+
+# seurat pipeline
+
+data_B <- data_B3
+
+plan(sequential)
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+data_B <- NormalizeData(data_B, scale.factor = 10000,
+                        normalization.method = "LogNormalize")
+
+data_B <- FindVariableFeatures(data_B, nfeatures = nfeatures, 
+                               selection.method = "vst")
+
+data_B <- ScaleData(data_B, features = VariableFeatures(data_B))
+
+data_B <- RunPCA(data_B, assay = 'RNA', slot = 'scale.data')
+
+data_B <- RunHarmony(data_B, group.by.vars = "sample",dims.use = 1:50,
+                     assay.use = "RNA")
+
+data_B <- FindNeighbors(data_B, k.param = neigh,
+                        dims = 1:ndim, reduction = "harmony")
+
+data_B <- FindClusters(data_B, resolution = 0.4, n.iter = 50)
+
+data_B <- RunUMAP(data_B, dims = 1:ndim,
+                  n.neighbors = neigh, min.dist = dist, 
+                  reduction = "harmony", reduction.name = "umap_harmony")
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = F,
+            group.by = c("sample"))
+
+
+# CD20+B cell
+select <- c("MS4A1", "CD19", "TCL1A", "CD27", "TNFRSF13B")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = FALSE,
+                        outlier.rm = F)
+
+
+plot
+
+lapply(plot, is.null)
+lapply(plot, class)
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "B")
+
+combined_plot
+
+# Plasma cell
+select <- c("MZB1", "XBP1", "IGHG1", "IGHA1", "MT1X","SDC1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] +
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Plasma")
+
+combined_plot
+
+# Other cells
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ","CD86","C1QA", "PECAM1", "COL1A1")
+plot <- featureplot_new(data = data_B,
+                        reduction = "umap_harmony",
+                        pt.size = 1, 
+                        color = "parula",
+                        features = select,
+                        raster = NULL,
+                        outlier.rm = F)
+
+
+plot
+
+library(patchwork)
+library(gridExtra)
+
+combined_plot <- plot[[1]] + plot[[2]] + plot[[3]] +
+  plot[[4]] + plot[[5]] + plot[[6]] + plot[[7]] + plot[[8]] +
+  plot_layout(ncol = 4) +
+  plot_annotation(title = "Other cells")
+
+combined_plot
+
+# 细胞质控
+
+exp <- GetAssayData(data_B,slot = "count")
+select <- c("EPCAM", "CD3D", "KLRB1", "LYZ", "CD86", "C1QA", "PECAM1", "COL1A1")
+exp_need <- exp[select,]
+exp_need <- as.data.frame(exp_need)
+exp_need <- as.data.frame(t(exp_need))
+names <- which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0)
+
+exp_need <- exp_need[which(exp_need$EPCAM == 0 & exp_need$CD3D == 0 & exp_need$KLRB1 == 0 & exp_need$LYZ == 0 & exp_need$C1QA == 0 & exp_need$PECAM1 == 0 & exp_need$COL1A1 == 0),]
+
+data_B <- data_B[,rownames(exp_need)]
+
+
+library(harmony)
+
+data_B <- RunHarmony(data_B,group.by.vars="sample",dims.use = 1:50,assay.use ="RNA")
+
+data_B <- FindNeighbors(data_B,k.param = neigh,dims =1:ndim,reduction="harmony")
+
+data_B <- FindClusters(data_B, resolution=res, n.iter =50)
+
+data_B <- RunUMAP(data_B, dims =1:ndim,
+                  n.neighbors=neigh,
+                  min.dist = dist,
+                  reduction ="harmony",
+                  reduction.name = "umap_harmony")
+
+dimplot_new(data_B,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(data_B, features = "RGS13", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "RGS13")
+
+gc()
+
+saveRDS(data_B3, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data_B3_final.rds")
+
+data_NK_part_1 <- readRDS("~/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/data_NK_part_1.rds")
+data_NK_part_2 <- readRDS("~/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/data_NK_part_2.rds")
+data_NK_part_3 <- readRDS("~/program/ICB/cohorts/ICB_2025_NSCLC_GSE243013/data_NK_part_3.rds")
+
+
+data_NK_part_1 <- data_NK_part_1[,data_NK_part_1$is.pure %in% c("Pure")]
+data_NK_part_2 <- data_NK_part_2[,data_NK_part_2$is.pure %in% c("Pure")]
+data_NK_part_3 <- data_NK_part_3[,data_NK_part_3$is.pure %in% c("Pure")]
+
+data_NK <- merge(data_NK_part_1,data_NK_part_2)
+data_NK <- merge(data_NK,data_NK_part_3)
+
+
+saveRDS(data_NK, file = "ICB_2025_STAD_HRA009064_NK.rds")
+
+exp <- GetAssayData(data_NK,slot = "count")
+select <- c("NCAM1", "KLRF1", "CD3E", "CD3G", "CD3D")
+exp_need <- exp[select,]
+exp_need <- as.data.frame(exp_need)
+exp_need <- as.data.frame(t(exp_need))
+
+exp_need <- exp_need[which(exp_need$CD3E == 0 & exp_need$CD3D == 0 & exp_need$CD3G == 0 ),]
+
+exp_need <- exp_need[which(exp_need$NCAM1 > 0 | exp_need$KLRF1 > 0 ),]
+
+data_clean <- data_NK[,rownames(exp_need)]
+
+
+saveRDS(data_clean, file = "/home/ug1268/program/ICB/01_merge/clean_data/ICB_2025_STAD_HRA009064.rds")
+
+
+
+
+
+
+
+
+
+
+
+
+

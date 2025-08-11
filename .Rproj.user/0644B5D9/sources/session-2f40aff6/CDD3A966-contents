@@ -1,0 +1,227 @@
+
+library(NMF)
+library(Seurat)
+library(plyr)
+library(dplyr)
+library(future)
+library(gtools)
+library(ggplot2)
+library(cowplot)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+library(psych)
+
+source("/home/ug1268/tools/mouse_sc/public_function_mouse.R")
+source("/home/ug1268/tools/mouse_sc/citeseq_function.R")
+source("/home/ug1268/program/ICB/cohorts/autocluster.R")
+
+### 拆分数据集，变成由sample组成的list，仅保留高变
+
+setwd("~/Steven Lijiajun/Steven/ICC_Nature队列")
+
+ICC_from_tumor_Nature <- readRDS("~/Steven Lijiajun/Steven/ICC_Nature队列/ICC_from_tumor_Nature.rds")
+datafilt <- ICC_from_tumor_Nature
+
+human_mrna <- read.table("/home/ug1268/tools/human_sc/mRNA_list.txt",sep="\t",header=T,check.names=F,row.names = 1)
+
+common <- intersect(rownames(datafilt), rownames(human_mrna))
+datafilt <- datafilt[common,]
+
+datafilt_tumor <- subset(datafilt, subset = celltype_sig2 == "tumor")
+
+datafilt_tumor <- NormalizeData(datafilt_tumor, scale.factor = 10000,
+                                normalization.method = "LogNormalize")
+
+datafilt_tumor <- FindVariableFeatures(datafilt_tumor, nfeatures = 3000,
+                                       selection.method = "vst")
+
+datafilt_tumor <- ScaleData(datafilt_tumor, features = VariableFeatures(datafilt_tumor), do.center = F)
+
+allexpmc <- SplitObject(datafilt_tumor, split.by = "sample")
+
+saveRDS(allexpmc, file = "~/Steven Lijiajun/Steven/NMF/1. ICC_Nature/allexpmc.rds")
+
+### NMF pipeline
+
+# NMF分析 ======================================================================
+
+# 生成NMF输入数据 --------------------
+
+allexpmc <- readRDS("~/Steven Lijiajun/Steven/NMF/1. ICC_Nature/allexpmc.rds")
+
+nmf_input <- lapply(allexpmc, function(i){
+
+  data <- NormalizeData(i)
+  data <- FindVariableFeatures(data, nfeatures = 5000)
+  data <- ScaleData(data, do.center = F)
+
+  as.matrix(GetAssayData(data,
+                         slot = "scale.data", assay = "RNA"))
+})
+
+# NMF program --------------------
+
+allnmf_integ <- consensus_nmf(nmf_input,
+                              topnumber = 150,
+                              knumber = 4,
+                              thres_freq = 2,
+                              thres_cor = 0.8,
+                              ncore = length(nmf_input_filtered))
+
+# 保存结果 --------------------
+
+name = "~/Steven Lijiajun/Steven/NMF/1. ICC_Nature/nmf_results.Rdata"
+save(allnmf_integ, file = name)
+
+# NMF - umap可视化 =============================================================
+
+# 提取NMF数据
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# program featureplot 可视化 --------------------
+
+nulldata <- lapply(names(allexpmc), function(i){
+
+  subexp <- allexpmc[[i]]
+  subnmf <- allnmf[[i]]
+
+  subexp <- AddMetaData(subexp, subnmf)
+  feature <- colnames(subnmf)
+
+  all_plots <- featureplot_new(data = subexp, pt.size = 2,
+                               reduction = "umap_harmony", color = "blue2red",
+                               features = feature)
+
+  name = paste0("figure/05_nmf/umap_harmony_nmf_", i, ".png")
+  export_featureplot(all_plots = all_plots,
+                     ncol = 5, dpi = 300, output = name)
+})
+
+
+# nmf结果多分类可视化 --------------------
+
+all_plots <- lapply(names(allexpmc), function(i){
+
+  subexp <- allexpmc[[i]]
+  subnmf <- allnmf[[i]]
+
+  nmfclass <- nmf_multi_cluster(subnmf, thres = 0.75)
+  subexp <- AddMetaData(subexp, nmfclass)
+
+  dimplot_new(subexp, pt.size = 1.5, reduction = "umap_harmony",
+              label = F, group.by = c("nmfclass")) + ggtitle(i)
+})
+
+name = "figure/05_nmf/umap_harmony_nmfclass_sep.png"
+export_dimplot(all_plots = all_plots,
+               ncol = 2, dpi = 300, output = name)
+
+
+# NMF - signature 相关性 =======================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# signature score --------------------
+
+path = "~/Steven Lijiajun/Steven/NMF/1. ICC_Nature/tumor_sig5.csv"
+
+allsig <- lapply(allexpmc, function(i){
+  seurat_score(i,
+               source = path,
+               geneset = NULL)
+})
+
+
+# 相关性计算 --------------------
+
+allcor <- lapply(names(allnmf), function(i){
+
+  subsig <- allsig[[i]]
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subsig),]
+  cor_betweenAB_exact(subnmf, subsig)
+})
+
+names(allcor) <- names(allnmf)
+
+
+# 热图可视化 --------------------
+
+for (i in names(allcor)) {
+  input <- allcor[[i]]
+
+  # 画图并导出
+
+  name = paste0("figure/05_nmf/heatmap_cor_nmf_sig_", i, ".pdf")
+  pdf(file = name, width = 8, height = 7)
+  print(heatmap_text(input = input, col_rot = 90,
+                     color = "blue2red", cutoff = 0.05,
+                     order_name = F, cluster_row = T, cluster_col = F))
+  dev.off()
+}
+
+
+# sample-wise 相似性 (jaccard) =================================================
+
+allnmf <- do.call(rbind, lapply(allnmf_integ, function(i){i$topgene}))
+
+
+# 使用jaccard计算 --------------------
+
+simmat = matrix(nrow = nrow(allnmf),
+                ncol = nrow(allnmf))
+
+for(i in 1:(nrow(allnmf)-1)){
+  for(j in (i+1):nrow(allnmf)){
+
+    A = as.matrix(allnmf)[i,]
+    B = as.matrix(allnmf)[j,]
+
+    jaccard <- length(intersect(A, B))/length(union(A, B))
+    simmat[i,j] = jaccard
+    simmat[j,i] = jaccard
+  }
+}
+
+dimnames(simmat) <- list(rownames(allnmf), rownames(allnmf))
+diag(simmat) <- 1
+
+
+# all program 可视化 --------------------
+
+pdf(file = "figure/05_nmf2/heatmap_simprogram.pdf",
+    width = 17, height = 15)
+
+heatmap_cor(simmat, color = "ocean.deep",
+            rev.col = TRUE, show.name = TRUE)
+dev.off()
+
+
+# meta program分析 =============================================================
+
+metap <- simi_metaprogram(simmat,
+                          cutoff.i = 0.05,
+                          cutoff.n = 3)
+
+# write.table(metap, "figure/05_nmf2/metap.txt",
+#             sep = "\t", quote = F, row.names = F, col.names = T)
+
+metap <- read.table("figure/05_nmf2/metap.txt",
+                    sep = "\t", header = T, check.names = F)
+
+pdf(file = "figure/05_nmf2/heatmap_metaprogram.pdf",
+    width = 8, height = 7)
+
+simi_metaprogram_plot1(simmat[metap$id,metap$id],
+                       show.name = TRUE,
+                       cluster = FALSE)
+dev.off()
+
+

@@ -1,0 +1,227 @@
+
+## Loading datasets ...
+
+Bm <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bm.rds")
+Bn <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bn.rds")
+ASC <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/ASC.rds")
+Bgc <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bgc.rds")
+Bcycling <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/merged individual cohorts/Bcycling.rds")
+
+## Protein-encoding mRNA only
+
+human_mrna <- read.table("/home/ug1268/tools/human_sc/mRNA_list.txt",sep="\t",header=T,check.names=F,row.names = 1)
+
+common <- intersect(rownames(Bm), rownames(human_mrna))
+Bm_mRNA <- Bm[common,]
+
+## 20% cells in each cluster for downstream analyses
+
+# Save metadata
+meta <- Bm_mRNA@meta.data
+meta$cell <- rownames(meta)
+
+# Sample 20% cells in each cluster
+selected_cells <- meta %>%
+  group_by(celltype_minor) %>%
+  sample_frac(0.2) %>%
+  pull(cell)
+
+# Subset Seurat object
+Bm_mRNA_sub <- subset(Bm_mRNA, cells = selected_cells)
+
+# Check cell numbers
+table(Bm_mRNA_sub$celltype_minor)
+
+## Cytotrace
+
+library(CytoTRACE2)
+
+# extract expression data
+expression_data <- as.data.frame(Bm_mRNA_sub@assays$RNA@counts)
+#colnames(expression_data)
+expression_data[1:5,1:5]
+
+# running CytoTRACE 2 main function - cytotrace2 - with default parameters
+cytotrace2_result <- cytotrace2(expression_data, species = "human", ncores = 1)
+
+# 写入meta.data
+Bm_mRNA_sub@meta.data <- cbind(Bm_mRNA_sub@meta.data,cytotrace2_result)
+head(Bm_mRNA_sub@meta.data)
+
+plot <- featureplot_new_TNBC(data = Bm_mRNA_sub,
+                             reduction = "umap_harmony",
+                             pt.size = 0.1,
+                             color = "blue2red",
+                             features = "CytoTRACE2_Score",
+                             raster = NULL,
+                             outlier.rm = F)
+plot
+
+# 山峦图
+
+meta <- Bm_mRNA_sub@meta.data
+input <- data.frame(type = meta$celltype_minor,
+                    value = meta$CytoTRACE2_Relative)
+
+# 计算各组的中位数并排序
+type_order <- input %>%
+  group_by(type) %>%
+  summarise(med = mean(value, na.rm = TRUE)) %>%
+  arrange(med) %>%
+  pull(type)
+
+type_order
+
+# 设置新的因子顺序
+input$type <- factor(input$type, levels = type_order)
+
+pdf("cytoTRACE_violin.pdf",onefile = FALSE,width=7,height=4)
+ggplot(input,aes(x = type, y = value, fill = type))+
+  geom_violin(trim=F,alpha=0.5)+
+  geom_boxplot(width=0.1,outlier.colour=NA)+theme_classic()+theme(
+    axis.line=element_line(colour='black'),
+    axis.text=element_text(colour='black'),
+    axis.title.x=element_blank(),
+    legend.position='top',
+    text=element_text(family='sans'))
+dev.off()
+
+dimplot_new(datafilt,
+            reduction = "umap_harmony",
+            pt.size = 0.1, label = T,
+            group.by = c("celltype_mid_new"))
+
+library(ggridges)
+library(ggplot2)
+pdf("cytoTRACE_ridge.pdf",onefile = FALSE,width=4,height=4.5)
+
+ggplot(data = input,
+       aes(x = value, y = type, fill = type)) +
+  geom_density_ridges(alpha = 0.8, 
+                      color = 'white',
+                      rel_min_height = 0.02, #尾部修剪，数值越大修剪程度越高
+                      scale = 1.8, #山脊重叠程度调整，scale = 1时刚好触及基线，数值越大重叠度越高
+                      quantile_lines = TRUE, #显示分位数线
+                      quantiles = 2 #仅显示中位数线
+  ) +scale_x_continuous(limits = c(0,0.9),
+                        breaks = seq(0, 0.9, by = 0.3))+ #x轴限制
+  theme_classic() +
+  theme(legend.position = 'none')
+dev.off()
+
+
+
+
+
+
+
+
+
+
+pdf("cytoTRACE.pdf",onefile = FALSE,width=4,height=4)
+
+featureplot_new(data = datafilt,
+                reduction = "umap_harmony",
+                pt.size = 0.001, 
+                color = "blue2red",
+                features = "CytoTRACE2_Score",
+                raster = FALSE,
+                outlier.rm = F)
+
+dev.off()
+
+
+saveRDS(result, "result.rds")
+
+
+
+gene = c("DUSP4","MT1X")
+
+
+exp_distribution_ecdf(Bm_mRNA_sub,
+                      select = gene,
+                      group = "celltype_minor",
+                      method = "wilcox.test",
+                      ncol = 2)
+
+exp_distribution_ecdf(datafilt,
+                      select = "Sox4",
+                      group = "group",
+                      method = "wilcox.test",
+                      ncol = 2)
+
+
+saveRDS(Bm_mRNA_sub, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/CytoTRACE2/Bm_mRNA_sub.rds")
+
+
+## monocle3
+
+#devtools::install_github('cole-trapnell-lab/monocle3')
+library(Seurat)
+library(monocle3)
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+
+Bm_mRNA_sub <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/04_monocle/CytoTRACE2/Bm_mRNA_sub.rds")
+
+colnames(Bm_mRNA_sub@meta.data)
+
+## 构建cds数据结构（monocle3数据对象）
+data <- GetAssayData(Bm_mRNA_sub, assay = 'RNA', layer = 'counts')
+
+datafilt <- Bm_mRNA_sub
+
+cell_metadata <- datafilt@meta.data
+gene_annotation <- data.frame(gene_short_name = rownames(datafilt))
+rownames(gene_annotation) <- rownames(datafilt)
+cds <- new_cell_data_set(data,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+
+reducedDims(cds)$UMAP <- Embeddings(datafilt, "umap_harmony")
+
+
+cds <- preprocess_cds(cds, num_dim = 100)  # 数据标准化
+plot_pc_variance_explained(cds) # 确认设定的num_dim数是否足够代表主要变异
+cds <- reduce_dimension(cds, preprocess_method = "PCA") # 降维，PCA或者LSI
+
+
+## Monocle3聚类分群
+cds <- cluster_cells(cds)
+p1 <- plot_cells(cds, show_trajectory_graph = FALSE) + ggtitle("label by clusterID")
+p2 <- plot_cells(cds, color_cells_by = "partition", show_trajectory_graph = FALSE) +   ggtitle("label by partitionID")
+wrap_plots(p1, p2)
+
+## 识别轨迹
+cds <- learn_graph(cds)
+plot_cells(cds, label_groups_by_cluster = FALSE, label_leaves = FALSE, label_branch_points = FALSE)
+
+plot_cells(cds, color_cells_by = "celltype_minor", # color_cells_by可以修改           
+           label_groups_by_cluster=FALSE, label_leaves=FALSE, label_branch_points=FALSE)
+
+plot_cells(cds,color_cells_by = "celltype_minor") # color_cells_by 设置展示分组情况
+
+plot_cells(cds, genes=c("DUSP4","LTB", "MT1X")) # genes参数可视化基因的变化
+
+# 用order_cells进行起点排序
+cds <- order_cells(cds)
+
+pdf("celltype.pdf",onefile = FALSE,width=5,height=4)
+plot_cells(cds,color_cells_by = "celltype_minor",  label_cell_groups=FALSE, label_leaves=TRUE, label_branch_points=TRUE, graph_label_size=1.5)
+dev.off()
+
+
+pdf("pseudotime.pdf",onefile = FALSE,width=5,height=4)
+plot_cells(cds, color_cells_by = "pseudotime", 
+           label_cell_groups=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           graph_label_size=0.000000001)+
+  scale_color_gradientn(colors =colorRampPalette(c("#0070b2","#009bc7","#5ec7dd",
+                                                   "#b8e3ea","#f3f3f1","#fccdb9",
+                                                   "#f79676","#f15e4c","#da1735"))(100))
+dev.off()
+
+

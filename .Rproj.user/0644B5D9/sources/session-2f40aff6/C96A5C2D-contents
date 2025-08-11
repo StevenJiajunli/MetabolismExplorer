@@ -1,0 +1,487 @@
+
+## 单细胞水平 GSE138709
+
+load("~/Steven Lijiajun/Steven/to 亲爱的师兄师姐师弟师妹/cqw/scRNA_gse138709_afterqc_harmony_afterannotation.Rdata")
+
+scRNA <- scRNA_gse138709_afterqc_harmony
+
+## 第一组比较：malignant cell vs normal Cholangiocyte
+
+unique(scRNA$celltype)
+
+epithelial <- subset(scRNA, subset = celltype %in% c("Malignant_cells","Cholangiocytes"))
+
+unique(epithelial$grade)
+
+epithelial@meta.data <- epithelial@meta.data %>%
+  mutate(grade_steven = recode(grade,
+                               "NC1" = "Cholangiocytes",
+                               "NC2" = "Cholangiocytes",
+                               "NC3" = "Cholangiocytes",
+                               "Grage II" = "Malignant Grade II",
+                               "Grade III" = "Malignant Grade III"))
+
+# seurat pipeline
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.1
+
+epithelial <- NormalizeData(epithelial, scale.factor = 10000,
+                            normalization.method = "LogNormalize")
+
+epithelial <- FindVariableFeatures(epithelial, nfeatures = nfeatures, 
+                                   selection.method = "vst")
+
+epithelial <- ScaleData(epithelial, features = VariableFeatures(epithelial))
+
+epithelial <- RunPCA(epithelial, assay = 'RNA', slot = 'scale.data')
+
+epithelial <- RunHarmony(epithelial, group.by.vars = "sample",dims.use = 1:50,
+                         assay.use = "RNA")
+
+epithelial <- FindNeighbors(epithelial, k.param = neigh,
+                            dims = 1:ndim, reduction = "harmony")
+
+epithelial <- FindClusters(epithelial, resolution = res, n.iter = 50)
+
+epithelial <- RunUMAP(epithelial, dims = 1:ndim,
+                      n.neighbors = neigh, min.dist = dist, 
+                      reduction = "harmony", reduction.name = "umap_harmony")
+
+epithelial <- RunTSNE(epithelial, dims = 1:ndim,
+                      n.neighbors = neigh, min.dist = dist, 
+                      reduction = "harmony", reduction.name = "tsne_harmony")
+
+# 代谢强度查看
+
+path = "~/Steven Lijiajun/交大仁济肿瘤所/细胞系富集/all_genesets_gem.rds"
+geneset1 = "metabolite"
+geneset2 = "subsystem"
+
+subsystem_score <- seurat_score(data = epithelial,
+                                source = path,
+                                geneset = geneset2,
+                                min.sz = 5)
+
+epithelial <- AddMetaData(epithelial, subsystem_score)
+
+# Pyrimidine metabolism
+
+plot <- featureplot_new(data = epithelial,
+                        reduction = "tsne_harmony",
+                        pt.size = 0.0000001, 
+                        color = "blue2red",
+                        features = "Pyrimidine metabolism",
+                        raster = NULL,
+                        outlier.rm = F)
+plot
+
+plot <- dimplot_new(data = epithelial,
+                    reduction = "tsne_harmony",
+                    pt.size = 0.0000001, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+epithelial@meta.data <- epithelial@meta.data %>%
+  mutate(grade_steven = recode(seurat_clusters,
+                               `0` = "Cholangiocytes",
+                               `2` = "Malignant Grade II",
+                               `1` = "Malignant Grade III",
+                               `3` = "Malignant Grade III",
+                               `4` = "Cholangiocytes",
+                               `5` = "Malignant Grade II",
+                               `6` = "Cholangiocytes"))
+
+plot <- dimplot_new(data = epithelial,
+                    reduction = "tsne_harmony",
+                    pt.size = 0.0000001, label = T,
+                    group.by = c("grade_steven"))
+plot
+
+## 正式绘图
+
+# Fig2a 上皮组织的提取
+
+plot <- dimplot_new(data = epithelial,
+                    reduction = "tsne_harmony",
+                    pt.size = 0.0000001, label = T,
+                    group.by = c("grade_steven"))
+plot
+
+Fig2a <- dimplot_new_cqw_DTYMK_nolegend(data = epithelial,
+                                        reduction = "tsne_harmony",
+                                        pt.size = 0.0000001, label = F,
+                                        group.by = c("grade_steven"))
+Fig2a
+
+# Fig2b 上皮组织嘧啶代谢强度比较
+
+plot <- featureplot_new(data = epithelial,
+                        reduction = "tsne_harmony",
+                        pt.size = 0.0000001, 
+                        color = "blue2red",
+                        features = "Pyrimidine metabolism",
+                        raster = NULL,
+                        outlier.rm = F)
+plot
+
+Fig2b <- featureplot_new_cqw_dtymk(data = epithelial,
+                                   reduction = "tsne_harmony",
+                                   pt.size = 0.0000001, 
+                                   color = "blue2red",
+                                   features = "Pyrimidine metabolism",
+                                   raster = NULL,
+                                   outlier.rm = F)
+Fig2b
+
+## Fig2c 嘧啶代谢强度山脊图
+
+library(tidyverse)
+library(ggplot2)
+library(gghalves)
+library(ggridges)
+library(cols4all)
+mycol2 <- col <- c("#A6D719", "#176EBF", "#00A8DE", "#AEE0E8",
+                   "#00A9A3", "#FBD324", "#F28A24", "#A52828",
+                   "#A37CB7", "#F2D7EE", "#CD6981", "#FBD0C0",
+                   "#F15E4C", "#ECB2C8", "#B2DBBF", "#CCDAD1")
+
+dtt <- data.frame(celltype = epithelial$grade_steven, Pyrimidine = epithelial$`Pyrimidine metabolism`)
+
+dtt$celltype <- factor(dtt$celltype, levels = c("Cholangiocytes", "Malignant Grade III", "Malignant Grade II"))
+
+# 计算三组之间的 p 值
+p1 <- wilcox.test(Pyrimidine ~ celltype, data = subset(dtt, celltype %in% c("Cholangiocytes", "Malignant Grade II")))$p.value
+p2 <- wilcox.test(Pyrimidine ~ celltype, data = subset(dtt, celltype %in% c("Cholangiocytes", "Malignant Grade III")))$p.value
+p3 <- wilcox.test(Pyrimidine ~ celltype, data = subset(dtt, celltype %in% c("Malignant Grade II", "Malignant Grade III")))$p.value
+
+# 转换为星号形式
+pstars <- function(p){
+  if (p < 0.001) return("***")
+  else if (p < 0.01) return("**")
+  else if (p < 0.05) return("*")
+  else return("ns")
+}
+
+label1 <- pstars(p1)  # Cholangiocytes vs Grade II
+label2 <- pstars(p2)  # Cholangiocytes vs Grade III
+label3 <- pstars(p3)  # Grade II vs Grade III
+
+# 绘图
+p <- ggplot(data = dtt, aes(x = Pyrimidine, y = celltype, fill = celltype)) +
+  geom_density_ridges(
+    alpha = 0.8,
+    color = 'white',
+    rel_min_height = 0.01,
+    scale = 2.0,
+    quantile_lines = TRUE,
+    quantiles = 2
+  ) +
+  scale_fill_manual(values = mycol2) +
+  theme_classic() +
+  scale_x_continuous(limits = c(0, 0.25))
+
+p
+
+## Fig2d Grade III 嘧啶代谢直方图比较
+
+dtt <- dtt[dtt$celltype == "Malignant Grade III",]
+
+# Calculate the 25% and 75% percentiles
+low_threshold <- quantile(dtt$Pyrimidine, 0.25)  # 25th percentile
+high_threshold <- quantile(dtt$Pyrimidine, 0.75)  # 75th percentile
+
+sum(dtt$Pyrimidine > 0.026 & dtt$Pyrimidine < 0.0891)
+sum(dtt$Pyrimidine < 0.026)
+sum(dtt$Pyrimidine > 0.0891)
+summary(dtt$Pyrimidine)
+
+##画图
+library(ggplot2)
+# 假设数据和分位数已经计算好
+# 根据上面数值填充
+scoring_counts <- data.frame(
+  Group = c("LPyrimidine", "DTPyrimidine", "HPyrimidine"),
+  Count = c(1283, 2565, 1283),  #！ 改 填实际的细胞数量
+  Boundary = c(-0.15, 0.05, 0.25)  # 数字展示的X轴位置 一般不用改 后期调整即可
+)
+
+scoring_counts$Xpos <- c(-0.05, 0.058, 0.15)
+
+data <- data.frame(Scoing = dtt$Pyrimidine)
+quantiles <- c(0.026, 0.0891) #！ 改 填25% 和 75% 对应的数值
+labels <- c("Score < 0.026", "Score > 0.0891") #！ 改 填25% 和 75% 对应的数值
+
+#skyblue
+# 绘图
+Fig2d <- ggplot(data, aes(x = Scoing)) +
+  geom_histogram(aes(y = ..density..), binwidth = 0.005, fill = "grey", color = "grey", alpha = 0.4) +
+  geom_density(color = "magenta", linetype = "dashed", size = 1) +
+  geom_vline(xintercept = quantiles, color = "#BB0021FF" , linetype = "dashed", size = 1) +
+  #geom_text(aes(x = Boundary, y = 0.6, label = paste(Group, ':', Count, 'cells')), data = scoring_counts, vjust = -0.5, color = "black", size = 3) +
+  geom_text(aes(x = Xpos, y = 5, label = paste(Group, '\n', Count, 'cells')), 
+            data = scoring_counts, vjust = -0.5, color = "black", size = 3.3) +
+  geom_text(aes(x = -0.025, y = 2, label = labels[1]), hjust = 1, color = "#BB0021FF" , size = 3.5) +
+  geom_text(aes(x = 0.125, y = 2, label = labels[2]), hjust = 0, color = "#BB0021FF" , size = 3.5) +
+  labs(title = " ", x = "Scoring", y = "Density") +
+  theme_classic()+
+  scale_x_continuous(limits = c(-0.12, 0.25))
+Fig2d
+
+## Fig2e GRADE III 瘤内异质性分析
+
+malignant_GRADEIII <- subset(epithelial, subset = grade_steven == "Malignant Grade III")
+
+# seurat pipeline
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.1
+
+malignant_GRADEIII <- NormalizeData(malignant_GRADEIII, scale.factor = 10000,
+                                    normalization.method = "LogNormalize")
+
+malignant_GRADEIII <- FindVariableFeatures(malignant_GRADEIII, nfeatures = nfeatures, 
+                                           selection.method = "vst")
+
+malignant_GRADEIII <- ScaleData(malignant_GRADEIII, features = VariableFeatures(malignant_GRADEIII))
+
+malignant_GRADEIII <- RunPCA(malignant_GRADEIII, assay = 'RNA', slot = 'scale.data')
+
+malignant_GRADEIII <- RunHarmony(malignant_GRADEIII, group.by.vars = "sample",dims.use = 1:50,
+                                 assay.use = "RNA")
+
+malignant_GRADEIII <- FindNeighbors(malignant_GRADEIII, k.param = neigh,
+                                    dims = 1:ndim, reduction = "harmony")
+
+malignant_GRADEIII <- FindClusters(malignant_GRADEIII, resolution = res, n.iter = 50)
+
+malignant_GRADEIII <- RunUMAP(malignant_GRADEIII, dims = 1:ndim,
+                              n.neighbors = neigh, min.dist = dist, 
+                              reduction = "harmony", reduction.name = "umap_harmony")
+
+malignant_GRADEIII <- RunTSNE(malignant_GRADEIII, dims = 1:ndim,
+                              n.neighbors = neigh, min.dist = dist, 
+                              reduction = "harmony", reduction.name = "tsne_harmony")
+
+# 建立 Pyrimidine metabolism state
+
+summary(malignant_GRADEIII$`Pyrimidine metabolism`)
+
+malignant_GRADEIII$Pyri_state <- ifelse(
+  malignant_GRADEIII$`Pyrimidine metabolism` < 0.02598, "c01_LPyrimidine",
+  ifelse(malignant_GRADEIII$`Pyrimidine metabolism` > 0.08912, "c03_HPyrimidine", "c02_DTPyrimidine")
+)
+
+table(malignant_GRADEIII$Pyri_state)
+
+plot <- dimplot_new(data = malignant_GRADEIII,
+                    reduction = "tsne_harmony",
+                    pt.size = 0.5, label = F,
+                    group.by = c("Pyri_state"))
+plot
+
+Fig2e <- dimplot_new_cqw_DTYMK_nolegend_LDTH(data = malignant_GRADEIII,
+                                             reduction = "tsne_harmony",
+                                             pt.size = 0.5, label = F,
+                                             group.by = c("Pyri_state"))
+Fig2e
+
+## Fig2f HPyrimidine vs LPyrimidine
+
+diff_HL <- seurat_diff2(datafilt = malignant_GRADEIII,
+                        group.by = "Pyri_state",
+                        group1 = "c03_HPyrimidine",
+                        group2 = "c01_LPyrimidine",
+                        assay = "RNA",
+                        min.pct = 0.25,
+                        thres.fc = 0.25)
+
+
+plot <- diff_loadingplot(diff = diff_HL,
+                         topn = 15, 
+                         color = "#560047",
+                         output = "~/Steven Lijiajun/Steven/to 亲爱的师兄师姐师弟师妹/cqw/Fig.2 嘧啶代谢与DTYMK的引出/Diff_HL_demo.pdf")
+
+input <- diff_HL[,c(1,2,7)]
+
+colnames(input) <- c("id","logfc","pvalue")
+
+plot <- common_volcano_plot(input = input,
+                            output = NULL,
+                            thres.p = 0.05,
+                            thres.fc = 0.25,
+                            topn = 5,
+                            marker = "DTYMK",
+                            label.size = 4,
+                            width = 8, height = 7)
+plot
+
+Fig2f <- common_volcano_plot(input = input,
+                             output = NULL,
+                             thres.p = 0.05,
+                             thres.fc = 0.25,
+                             topn = 5,
+                             marker = "DTYMK",
+                             label.size = 4,
+                             width = 8, height = 7)
+Fig2f
+
+## Fig2g 富集分析
+
+path <- "~/Steven Lijiajun/Steven/to 亲爱的师兄师姐师弟师妹/cqw/Fig.2 嘧啶代谢与DTYMK的引出/all_genesets.rds"
+
+input <- data.frame(id = diff_HL$gene,
+                    value =diff_HL$logfc)
+
+result_diffHL_hallmark <- gsea_analysis(input = input,
+                                        source = path,
+                                        geneset = "msigdb_hallmark",
+                                        set.min = 5,
+                                        set.max = 1000)
+
+result_diffHL_KEGG <- gsea_analysis(input = input,
+                                    source = path,
+                                    geneset = "KEGG",
+                                    set.min = 5,
+                                    set.max = 1000)
+
+result_diffHL_Wiki <- gsea_analysis(input = input,
+                                      source = path,
+                                      geneset = "GProfiler_Wiki",
+                                      set.min = 5,
+                                      set.max = 1000)
+
+# lolipop plot
+
+result_diffHL_hallmark <- result_diffHL_hallmark[result_diffHL_hallmark$pvalue < 0.05,]
+
+plot <- lollipop_plot(result_diffHL_hallmark)
+
+plot
+
+result_diffHL_KEGG <- result_diffHL_KEGG[result_diffHL_KEGG$pvalue < 0.01,]
+
+plot <- lollipop_plot(result_diffHL_KEGG)
+
+plot
+
+# 整理棒棒糖图的输入文件
+
+result_diffHL_hallmark_want <- result_diffHL_hallmark[2:14,]
+
+result_diffHL_KEGG_want <- result_diffHL_KEGG[c(1,3,11,32,28,29,21,26),]
+
+result_diffHL_want <- rbind(result_diffHL_hallmark_want,result_diffHL_KEGG_want)
+
+plot <- lollipop_plot(result_diffHL_want)
+
+plot
+
+## Fig 2X123 挑几个可视化一下
+
+# GSEA enrichment
+
+path <- "~/Steven Lijiajun/Steven/to 亲爱的师兄师姐师弟师妹/cqw/Fig.2 嘧啶代谢与DTYMK的引出/all_genesets.rds"
+
+# Pyri
+
+plot1 <- gsea_barcode(input = input,
+                      source = path,
+                      geneset = "GProfiler_Wiki",
+                      select = "Fluoropyrimidine activity")
+plot1
+
+
+# 选择基因集
+list <- all_genesets[["GProfiler_Wiki"]]
+list <- list["Fluoropyrimidine activity"]
+
+# leading gene
+leading <- leading_edge(input = input, geneset = list)
+
+# 开始可视化
+select = c("TXN", "CDA", "NME1","DTYMK","DUT")
+plot <- leading_edge_plot(input = input,
+                          geneset = list,
+                          select.gene = TRUE,
+                          select.name = select)
+plot
+
+## antigen presentation
+
+plot1 <- gsea_barcode(input = input,
+                      source = path,
+                      geneset = "KEGG",
+                      select = "Antigen processing and presentation")
+plot1
+
+
+# 选择基因集
+list <- all_genesets[["KEGG"]]
+list <- list["Antigen processing and presentation"]
+
+# leading gene
+leading <- leading_edge(input = input, geneset = list)
+
+# 开始可视化
+#select = c("TXN", "CDA", "NME1","DTYMK","DUT")
+plot <- leading_edge_plot(input = input,
+                          geneset = list,
+                          select.gene = TRUE,
+                          select.name = select)
+plot
+
+## antigen presentation
+
+plot1 <- gsea_barcode(input = input,
+                      source = path,
+                      geneset = "Science_BP",
+                      select = "Immunity")
+plot1
+
+
+# 选择基因集
+list <- all_genesets[["Science_BP"]]
+list <- list["Immunity"]
+
+# leading gene
+leading <- leading_edge(input = input, geneset = list)
+
+# 开始可视化
+#select = c("TXN", "CDA", "NME1","DTYMK","DUT")
+plot <- leading_edge_plot(input = input,
+                          geneset = list,
+                          select.gene = TRUE,
+                          select.name = select)
+plot
+
+## Glycolysis and gluconeogenesis
+
+plot1 <- gsea_barcode(input = input,
+                      source = path,
+                      geneset = "GProfiler_Wiki",
+                      select = "Glycolysis and gluconeogenesis")
+plot1
+
+
+# 选择基因集
+list <- all_genesets[["GProfiler_Wiki"]]
+list <- list["Glycolysis and gluconeogenesis"]
+
+# leading gene
+leading <- leading_edge(input = input, geneset = list)
+
+# 开始可视化
+#select = c("TXN", "CDA", "NME1","DTYMK","DUT")
+plot <- leading_edge_plot(input = input,
+                          geneset = list,
+                          select.gene = TRUE,
+                          select.name = select)
+plot
+

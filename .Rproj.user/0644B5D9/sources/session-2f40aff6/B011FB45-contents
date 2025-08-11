@@ -1,0 +1,291 @@
+
+## GSE266919 TNBC
+
+GSE266919_Myeloid <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/09_Bm: DUSP4 and Mast cell/GSE266919/GSE266919_Myeloid.rds")
+
+GSE266919_Myeloid <- Seurat::as.Seurat(
+  GSE266919_Myeloid,
+  counts = "counts",
+  data = NULL,
+  assay = NULL,
+  project = "SingleCellExperiment")
+
+table(GSE266919_Myeloid$SubCluster)
+
+GSE266919_Myeloid <- RenameAssays(object = GSE266919_Myeloid, originalexp = "RNA")
+
+Mast <- subset(GSE266919_Myeloid, subset = SubCluster == "Mast")
+
+nfeatures = 2000
+ndim = 15
+neigh = 75
+dist = 0.5
+res = 0.2
+
+Mast <- NormalizeData(Mast, scale.factor = 10000,
+                      normalization.method = "LogNormalize")
+
+Mast <- FindVariableFeatures(Mast, nfeatures = nfeatures, 
+                             selection.method = "vst")
+
+Mast <- ScaleData(Mast, features = VariableFeatures(Mast))
+
+Mast <- RunPCA(Mast, assay = 'RNA', slot = 'scale.data')
+
+Mast <- RunHarmony(Mast, group.by.vars = "Sample",dims.use = 1:50,
+                   assay.use = "RNA")
+
+Mast <- FindNeighbors(Mast, k.param = neigh,
+                      dims = 1:ndim, reduction = "harmony")
+
+Mast <- FindClusters(Mast, resolution = 0.8, n.iter = 50)
+
+Mast <- RunUMAP(Mast, dims = 1:ndim,
+                n.neighbors = neigh, min.dist = dist, 
+                reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = Mast,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+#table(Mast$response)
+
+i = "ZFP36"
+
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+#col <- colorRampPalette(c("#F0F0F0","#E5E0ED","#BFC6DD","#8CADCC","#4E92BA","#1871A8","#085889","#003758"))(100)
+
+FeaturePlot(Mast, features = i, reduction = "umap_harmony", pt.size = 1, raster = FALSE) + 
+  theme_bw() +  # Use a clean, white background
+  theme(
+    panel.grid = element_blank(),            # Remove grid lines
+    axis.ticks = element_blank(),            # Remove axis ticks
+    axis.text = element_blank(),             # Remove axis text
+    axis.title = element_text(colour = "black", size = 15),  # Customize axis title
+    plot.title = element_text(size = 17, hjust = 0.5),  # Customize plot title, center-align it
+    panel.border = element_blank(),          # Remove the panel border
+    legend.position = "right"                # Keep the color bar on the right
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  # Apply the custom color palette for continuous data
+  labs(x = ' ', y = ' ', title = i)
+
+Mast <- subset(Mast, idents = c(0:3,5))
+
+Mast <- FindNeighbors(Mast, k.param = neigh,
+                      dims = 1:ndim, reduction = "harmony")
+
+Mast <- FindClusters(Mast, resolution = 0.8, n.iter = 50)
+
+Mast <- RunUMAP(Mast, dims = 1:ndim,
+                n.neighbors = neigh, min.dist = dist, 
+                reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = Mast,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+#table(Mast$response)
+
+i = "CD74"
+
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+#col <- colorRampPalette(c("#F0F0F0","#E5E0ED","#BFC6DD","#8CADCC","#4E92BA","#1871A8","#085889","#003758"))(100)
+
+FeaturePlot(Mast, features = i, reduction = "umap_harmony", pt.size = 1, raster = FALSE) + 
+  theme_bw() +  # Use a clean, white background
+  theme(
+    panel.grid = element_blank(),            # Remove grid lines
+    axis.ticks = element_blank(),            # Remove axis ticks
+    axis.text = element_blank(),             # Remove axis text
+    axis.title = element_text(colour = "black", size = 15),  # Customize axis title
+    plot.title = element_text(size = 17, hjust = 0.5),  # Customize plot title, center-align it
+    panel.border = element_blank(),          # Remove the panel border
+    legend.position = "right"                # Keep the color bar on the right
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  # Apply the custom color palette for continuous data
+  labs(x = ' ', y = ' ', title = i)
+
+## Mast 注释
+
+Mast$celltype_cellchat_BmMast <- ifelse(
+  Mast$seurat_clusters == "3", "Mast: CD74", "Mast: ZFP36")
+
+table(Mast$celltype_cellchat_BmMast)
+
+Mast$response <- Mast$Response
+
+## Bm: DUSP4
+
+table(Bm_DUSP4$cohort)
+
+Bm_DUSP4 <- subset(Bm_DUSP4, subset = cohort == "GSE266919")
+
+Bm_DUSP4$celltype_cellchat_BmMast <- "Bm: DUSP4"
+
+BmMast_cellchat <- merge(Bm_DUSP4,
+                         list(Mast))
+
+nfeatures = 2000
+ndim = 15
+neigh = 75
+dist = 0.5
+res = 0.2
+
+BmMast_cellchat <- NormalizeData(BmMast_cellchat, scale.factor = 10000,
+                                 normalization.method = "LogNormalize")
+
+BmMast_cellchat <- FindVariableFeatures(BmMast_cellchat, nfeatures = nfeatures, 
+                                        selection.method = "vst")
+
+BmMast_cellchat <- ScaleData(BmMast_cellchat, features = VariableFeatures(Mast))
+
+BmMast_cellchat <- RunPCA(BmMast_cellchat, assay = 'RNA', slot = 'scale.data')
+
+BmMast_cellchat <- RunHarmony(BmMast_cellchat, group.by.vars = "celltype_cellchat_BmMast",dims.use = 1:50,
+                              assay.use = "RNA")
+
+BmMast_cellchat <- FindNeighbors(BmMast_cellchat, k.param = neigh,
+                                 dims = 1:ndim, reduction = "harmony")
+
+BmMast_cellchat <- FindClusters(BmMast_cellchat, resolution = 0.4, n.iter = 50)
+
+BmMast_cellchat <- RunUMAP(BmMast_cellchat, dims = 1:ndim,
+                           n.neighbors = neigh, min.dist = dist, 
+                           reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = BmMast_cellchat,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("celltype_cellchat_BmMast"))
+plot
+
+table(BmMast_cellchat$response)
+
+
+## cellchat pipeline
+
+library(Seurat)
+library(ggsignif)
+library(ggpubr)
+library(cowplot)
+library(dplyr)
+library(NMF)
+library(ggalluvial)
+library(CellChat)
+library(pheatmap)
+library(qs)
+library(patchwork)
+library(future)
+library(CellChat)
+library(Seurat)
+library(future)
+
+datafilt_cellchat <- BmMast_cellchat
+
+table(datafilt_cellchat$celltype_cellchat_BmMast)
+
+table(datafilt_cellchat$response)
+
+datafilt_cellchat$group <- datafilt_cellchat$response
+
+table(datafilt_cellchat$group)
+
+#print(table(Idents(data_cellchat)))
+
+setwd("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/09_Bm: DUSP4 and Mast cell/GSE266919")
+
+# 按组循环分析
+for (group in unique(datafilt_cellchat$group)) {
+  
+  # 子集数据
+  data_subset <- datafilt_cellchat[, datafilt_cellchat$group == group]
+  
+  # 创建 CellChat 对象
+  data_cellchat <- createCellChat(object = GetAssayData(data_subset, assay = "RNA", slot = "data"))
+  
+  # 使用 celltype_cellchat_BmMast 作为细胞分群信息
+  meta_info <- data.frame(celltype_cellchat_BmMast = data_subset$celltype_cellchat_BmMast, row.names = colnames(data_subset))
+  data_cellchat <- addMeta(data_cellchat, meta = meta_info, meta.name = "celltype_cellchat_BmMast")
+  data_cellchat <- setIdent(data_cellchat, ident.use = "celltype_cellchat_BmMast")
+  
+  # 加载人类 CellChat 数据库
+  CellChatDB <- CellChatDB.human
+  data_cellchat@DB <- CellChatDB
+  
+  # 表达数据预处理
+  data_cellchat <- subsetData(data_cellchat)
+  data_cellchat <- identifyOverExpressedGenes(data_cellchat)
+  data_cellchat <- identifyOverExpressedInteractions(data_cellchat)
+  
+  # 设置并行参数
+  options(future.globals.maxSize = 20 * 1024^3)  # 20GB
+  plan("multisession", workers = 6)
+  
+  # 推断细胞通讯网络
+  data_cellchat <- computeCommunProb(data_cellchat)
+  data_cellchat <- filterCommunication(data_cellchat, min.cells = 10)
+  data_cellchat <- computeCommunProbPathway(data_cellchat)
+  data_cellchat <- aggregateNet(data_cellchat)
+  data_cellchat <- netAnalysis_computeCentrality(data_cellchat, slot.name = "netP")
+  
+  # 保存结果
+  saveRDS(data_cellchat, paste0(group, "_CellChat.rds"))
+}
+
+## 下游分析
+
+NR_CellChat <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/09_Bm: DUSP4 and Mast cell/GSE266919/NR_CellChat.rds")
+R_CellChat <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/09_Bm: DUSP4 and Mast cell/GSE266919/R_CellChat.rds")
+
+object.list <- list(NR = NR_CellChat, R = R_CellChat)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = T, targets.use = 'Bm: DUSP4')
+netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight", targets.use = 'Bm: DUSP4')
+
+gg1 <- netVisual_heatmap(cellchat)
+gg2 <- netVisual_heatmap(cellchat, measure = "weight")
+gg1 + gg2
+
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) 
+{  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, 
+                    label.edge= F, edge.weight.max = weight.max[2], 
+                    edge.width.max = 12, 
+                    title.name = paste0("Number of interactions - ", names(object.list)[i]),
+                    targets.use = 'Bm: DUSP4')}
+
+gg1 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Bm: DUSP4")
+gg1
+
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE, targets.use = 'Bm: DUSP4')
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE, targets.use = 'Bm: DUSP4')
+gg1 + gg2
+
+library(ComplexHeatmap)
+i = 1
+pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 8 ,height = 15, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 8, height = 15, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i], width = 8 ,height = 15, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+1], width = 8, height = 15, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+
+netVisual_bubble(cellchat, sources.use = 1:5, targets.use = 1:5,  comparison = c(1, 2), angle.x = 45)
+
+#table(ICC_from_tumor_Nature$celltype)

@@ -1,0 +1,160 @@
+library(NMF)
+library(Seurat)
+library(plyr)
+library(dplyr)
+library(scater)
+library(future)
+library(gtools)
+library(ggplot2)
+library(cowplot)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+
+
+source("/home/ug0302/CITEseq/public_data/citeseq_function.R")
+setwd("/home/ug0302/CITEseq")
+load("savedata/data1.Rdata")
+load("savedata/data2.Rdata")
+load("savedata/viper_results.Rdata")
+load("savedata/nmf_results.Rdata")
+
+
+# 选择stem program --------------------
+
+select <- c("R4_HC005", "R7_HC006", "R1_HC007", "R5_HUH7")
+
+
+# 提取共有基因 =================================================================
+
+allnmf <- do.call(rbind, lapply(allnmf_integ, function(i){i$topgene}))
+stemnmf <- data.frame(t(allnmf[select,]))
+
+
+# upset plot 可视化 --------------------
+
+pdf(file = "figure/05_nmf3/upset_select.pdf",
+    width = 8.5, height = 6)
+
+upset_plot(stemnmf)
+dev.off()
+
+
+# 共有基因可视化 --------------------
+
+genes <- do.call(c, lapply(stemnmf, function(i){i}))
+genes <- data.frame(table(genes))
+
+# 结果可视化
+
+names(genes)[1:2] <- c("id", "value")
+plot <- loading_plot(genes, topn = 15, color = "#A52828")
+
+# 保存结果
+
+name = "figure/05_nmf3/common_genes.pdf"
+ggsave(name, plot, width = 3.5, height = 5)
+
+
+
+# stem - nonstem 差异signature =================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# program - sig 相关性 --------------------
+
+anno_cor <- do.call(cbind, lapply(names(allnmf), function(i){
+  
+  cellp <- allnmf[[i]]
+  path <- "/home/ug0302/CITEseq/public_data/all_genesets.rds"
+  
+  sig <- metacell_score(metacell = allexpmc[[i]],
+                        rawcell = allexp[[i]], source = path,
+                        geneset = "KEGG", min.sz = 10)
+  
+  cor_betweenAB(cellp, sig)
+}))
+
+
+# 生成注释文件 --------------------
+
+info <- data.frame(id = colnames(anno_cor), type = "non_stem")
+info$type[info$id %in% select] <- "stem"
+
+diff <- diffanalysis_yc(anno_cor, info,
+                        group1 = "stem",
+                        group2 = "non_stem",
+                        ncore = 10)
+
+diff <- diff$id[diff$logfc> 0.5]
+
+
+# 聚类热图可视化 --------------------
+
+pdf(file = "figure/05_nmf3/heatmap_cor_program_sig.pdf",
+    width = 12, height = 9)
+
+heatmap_cluster(anno_cor, color = "blue2red",
+                dicho.thres = 0.5, number.k = 5, number.maxk = 6)
+dev.off()
+
+
+
+# stem - surface / TF 相关性 ===================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+select_sf <- read.table("public_data/viper_anno.txt", sep = "\t", header = T)
+select_sf <- select_sf$id[select_sf$type == "surface"]
+
+
+# 相关性计算 --------------------
+
+allcor <- do.call(rbind, lapply(names(allnmf), function(i){
+  
+  # 整理蛋白数据
+  
+  subvip <- allvipmc[[i]]
+  subvip <- t(as.matrix(GetAssayData(subvip, slot = "data")))
+  subvip <- subvip[,colnames(subvip) %in% select_sf]
+  
+  # 整理NMF数据
+  
+  subnmf <- as.matrix(allnmf[[i]])
+  subnmf <- data.frame(subnmf[,colnames(subnmf) %in% select])
+  
+  # 相关性分析
+  
+  cor <- cor_between_aB(subnmf, subvip)
+  cor$sample <- i
+  cor
+}))
+
+
+# 结果总结 --------------------
+
+# 整理相关性数据
+
+freq <- data.frame(table(allcor$id))
+genes <- freq$Var1[freq$Freq >= 0.75*length(unique(allcor$sample))]
+allcor <- allcor[allcor$id %in% genes,]
+
+# 计算mean与sd
+
+mean <- aggregate(allcor$cor, by = list(allcor$id), FUN = mean)
+sd <- aggregate(allcor$cor, by = list(allcor$id), FUN = sd)
+input <- data.frame(id = mean[,1], mean = mean[,2], sd = -log10(sd[,2]))
+
+# 结果可视化
+
+plot <- scatter_highlight(input, topn = 5, color = "#0070b2")
+
+name = "figure/05_nmf3/stem_surface.pdf"
+ggsave(name, plot, width = 6, height = 5.5)
+
+

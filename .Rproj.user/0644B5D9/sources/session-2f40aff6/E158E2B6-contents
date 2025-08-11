@@ -1,0 +1,482 @@
+
+library(Seurat)
+library(plyr)
+library(scater)
+library(stringr)
+library(future)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+library(SingleCellExperiment)
+library(harmony)
+
+mycol <- c(brewer.pal(5,"Set1"), brewer.pal(8,"Set2"),
+           brewer.pal(11,"Set3"), brewer.pal(12,"Paired"),
+           brewer.pal(8,"Accent"), brewer.pal(11,"Spectral"),
+           brewer.pal(11,"BrBG"), brewer.pal(11,"PiYG"),
+           brewer.pal(11,"PuOr"),brewer.pal(11,"RdBu"))
+
+
+setwd("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE243013")
+source("/home/ug1268/tools/mouse_sc/public_function_mouse.R")
+source("/home/ug1268/tools/mouse_sc/citeseq_function.R")
+
+### GSE243013
+
+###########################data_part_1
+data_part_1 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_1.rds")
+
+library(scGate)
+scGate_DB <- get_scGateDB()
+Mast1 <- scGate(data_part_1, model = scGate_DB$human$generic$Mast,
+                pos.thr = 0.25, ncores = 6)
+# 21:29-21:57
+
+Mast1 <- Mast1[,Mast1$is.pure %in% c("Pure")]
+
+#saveRDS(Mast1, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/Mast1.rds")
+
+#gc()
+
+
+# seurat pipeline
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+Mast1 <- NormalizeData(Mast1, scale.factor = 10000,
+                       normalization.method = "LogNormalize")
+
+Mast1 <- FindVariableFeatures(Mast1, nfeatures = nfeatures, 
+                              selection.method = "vst")
+
+Mast1 <- ScaleData(Mast1, features = VariableFeatures(Mast1))
+
+Mast1 <- RunPCA(Mast1, assay = 'RNA', slot = 'scale.data')
+
+Mast1 <- RunHarmony(Mast1, group.by.vars = "sample",dims.use = 1:50,
+                    assay.use = "RNA")
+
+Mast1 <- FindNeighbors(Mast1, k.param = neigh,
+                       dims = 1:ndim, reduction = "harmony")
+
+Mast1 <- FindClusters(Mast1, resolution = 0.4, n.iter = 50)
+
+Mast1 <- RunUMAP(Mast1, dims = 1:ndim,
+                 n.neighbors = neigh, min.dist = dist, 
+                 reduction = "harmony", reduction.name = "umap_harmony")
+
+Mast1 <- subset(Mast1, idents = c(0:7))
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(Mast1,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(Mast1, features = "LYZ", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "CD74")
+
+
+
+# 保存数据
+
+saveRDS(Mast1, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE243013/Mast1.rds")
+
+
+###########################data_part_2
+data_part_2 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_2.rds")
+
+library(scGate)
+scGate_DB <- get_scGateDB()
+Mast2 <- scGate(data_part_2, model = scGate_DB$human$generic$Mast,
+                pos.thr = 0.25, ncores = 6)
+# 21:29-21:57
+
+Mast2 <- Mast2[,Mast2$is.pure %in% c("Pure")]
+
+#saveRDS(Mast1, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/Mast1.rds")
+
+#gc()
+
+
+# seurat pipeline
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+Mast2 <- NormalizeData(Mast2, scale.factor = 10000,
+                       normalization.method = "LogNormalize")
+
+Mast2 <- FindVariableFeatures(Mast2, nfeatures = nfeatures, 
+                              selection.method = "vst")
+
+Mast2 <- ScaleData(Mast2, features = VariableFeatures(Mast2))
+
+Mast2 <- RunPCA(Mast2, assay = 'RNA', slot = 'scale.data')
+
+Mast2 <- RunHarmony(Mast2, group.by.vars = "sample",dims.use = 1:50,
+                    assay.use = "RNA")
+
+Mast2 <- FindNeighbors(Mast2, k.param = neigh,
+                       dims = 1:ndim, reduction = "harmony")
+
+Mast2 <- FindClusters(Mast2, resolution = 0.4, n.iter = 50)
+
+Mast2 <- RunUMAP(Mast2, dims = 1:ndim,
+                 n.neighbors = neigh, min.dist = dist, 
+                 reduction = "harmony", reduction.name = "umap_harmony")
+
+Mast1 <- subset(Mast1, idents = c(0:7))
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(Mast2,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(Mast2, features = "ZFP36", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "CD74")
+
+
+
+# 保存数据
+
+saveRDS(Mast2, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE243013/Mast2.rds")
+
+
+###########################data_part_3
+data_part_3 <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/data/data_part_3.rds")
+
+library(scGate)
+scGate_DB <- get_scGateDB()
+Mast3 <- scGate(data_part_3, model = scGate_DB$human$generic$Mast,
+                pos.thr = 0.25, ncores = 6)
+# 21:29-21:57
+
+Mast3 <- Mast3[,Mast3$is.pure %in% c("Pure")]
+
+#saveRDS(Mast1, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2025_NSCLC_GSE243013/Mast1.rds")
+
+#gc()
+
+
+# seurat pipeline
+
+nfeatures = 2000
+ndim = 15
+neigh = 20
+dist = 0.5
+res = 0.6
+
+Mast3 <- NormalizeData(Mast3, scale.factor = 10000,
+                       normalization.method = "LogNormalize")
+
+Mast3 <- FindVariableFeatures(Mast3, nfeatures = nfeatures, 
+                              selection.method = "vst")
+
+Mast3 <- ScaleData(Mast3, features = VariableFeatures(Mast3))
+
+Mast3 <- RunPCA(Mast3, assay = 'RNA', slot = 'scale.data')
+
+Mast3 <- RunHarmony(Mast3, group.by.vars = "sample",dims.use = 1:50,
+                    assay.use = "RNA")
+
+Mast3 <- FindNeighbors(Mast3, k.param = neigh,
+                       dims = 1:ndim, reduction = "harmony")
+
+Mast3 <- FindClusters(Mast3, resolution = 0.4, n.iter = 50)
+
+Mast3 <- RunUMAP(Mast3, dims = 1:ndim,
+                 n.neighbors = neigh, min.dist = dist, 
+                 reduction = "harmony", reduction.name = "umap_harmony")
+
+# 结果可视化1
+library(ggplot2)
+dimplot_new(Mast3,
+            reduction = "umap_harmony",
+            pt.size = 0.2, label = T,
+            group.by = c("seurat_clusters"))
+
+## featureplot 检查
+my_colors <- c("#F0F0F0",'#EDD1D8', '#f4a3a8', '#e38191', '#cc607d', '#ad466c', '#8b3058', '#672044')
+
+FeaturePlot(Mast3, features = "CPA3", reduction = "umap_harmony",pt.size = 0.01, raster=FALSE) + 
+  theme_bw() +  
+  theme(
+    panel.grid = element_blank(),            
+    axis.ticks = element_blank(),            
+    axis.text = element_blank(),             
+    axis.title = element_text(colour = "black", size = 15),  
+    plot.title = element_text(size = 17, hjust = 0.5),  
+    panel.border = element_blank()       
+  ) + 
+  scale_color_gradientn(colors = my_colors) +  
+  labs(x = ' ', y = ' ', title = "CD74")
+
+
+
+# 保存数据
+
+saveRDS(Mast3, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE243013/Mast3.rds")
+
+### GSE169246
+
+## 数据读取
+
+GSE169246_datafilt_cellchat <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/07_annotation and cellchat/GSE169246/final/GSE169246_datafilt_cellchat.rds")
+datafilt_cellchat <- GSE169246_datafilt_cellchat
+
+table(datafilt_cellchat$celltype_major)
+
+Mast4 <- subset(datafilt_cellchat, subset = celltype_major == "MAST")
+
+# 保存数据
+
+saveRDS(Mast4, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE169246/Mast4.rds")
+
+
+### GSE266919
+
+GSE266919_Myeloid <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/09_Bm: DUSP4 and Mast cell/GSE266919/GSE266919_Myeloid.rds")
+
+GSE266919_Myeloid <- Seurat::as.Seurat(
+  GSE266919_Myeloid,
+  counts = "counts",
+  data = NULL,
+  assay = NULL,
+  project = "SingleCellExperiment")
+
+table(GSE266919_Myeloid$SubCluster)
+
+GSE266919_Myeloid <- RenameAssays(object = GSE266919_Myeloid, originalexp = "RNA")
+
+Mast <- subset(GSE266919_Myeloid, subset = SubCluster == "Mast")
+
+nfeatures = 2000
+ndim = 15
+neigh = 75
+dist = 0.5
+res = 0.2
+
+Mast <- NormalizeData(Mast, scale.factor = 10000,
+                      normalization.method = "LogNormalize")
+
+Mast <- FindVariableFeatures(Mast, nfeatures = nfeatures, 
+                             selection.method = "vst")
+
+Mast <- ScaleData(Mast, features = VariableFeatures(Mast))
+
+Mast <- RunPCA(Mast, assay = 'RNA', slot = 'scale.data')
+
+Mast <- RunHarmony(Mast, group.by.vars = "Sample",dims.use = 1:50,
+                   assay.use = "RNA")
+
+Mast <- FindNeighbors(Mast, k.param = neigh,
+                      dims = 1:ndim, reduction = "harmony")
+
+Mast <- FindClusters(Mast, resolution = 0.8, n.iter = 50)
+
+Mast <- RunUMAP(Mast, dims = 1:ndim,
+                n.neighbors = neigh, min.dist = dist, 
+                reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = Mast,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+Mast <- subset(Mast, idents = c(0:3,5))
+
+# 保存数据
+
+saveRDS(Mast, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE266919/Mast5.rds")
+
+### GSE236581
+
+## 数据读取
+
+# seurat 对象
+datafilt <- readRDS("~/Steven Lijiajun/Pancancer ICB B cell atlas/cohorts/ICB_2024_CRC_GSE236581/ICB_2024_CRC_GSE236581_all.rds")
+
+table(datafilt$SubCellType)
+
+## 注释数据
+
+datafilt@meta.data <- datafilt@meta.data %>%
+  mutate(celltype_major = recode(SubCellType,
+                                 "c01_CD4_Tn_CCR7" = "CD4T",
+                                 "c02_CD4_Tn_SELL" = "CD4T",
+                                 "c03_CD4_Tn_NR4A2" = "CD4T",
+                                 "c04_CD4_Tcm_ANXA1" = "CD4T",
+                                 "c05_CD4_Tcm_GPR183" = "CD4T",
+                                 "c06_CD4_Trm_HSPA1A" = "CD4T",
+                                 "c07_CD4_Th17_CTSH" = "CD4T",
+                                 "c08_CD4_Tfh_CXCL13_IL6ST" = "CD4T",
+                                 "c09_CD4_Th1_CXCL13_HAVCR2" = "CD4T",
+                                 "c10_CD4_Temra_GZMB" = "CD4T",
+                                 "c11_CD4_Treg_FOXP3" = "Treg",
+                                 "c12_CD4_Treg_KLRB1" = "Treg",
+                                 "c13_CD4_Treg_TNFRSF9" = "Treg",
+                                 "c14_CD4_MT" = "CD4T",
+                                 "c15_CD8_Tn_CCR7" = "CD8T",
+                                 "c16_CD8_Tn_SELL" = "CD8T",
+                                 "c17_CD8_Tcm_GPR183" = "CD8T",
+                                 "c18_CD8_Tcm_ANXA1" = "CD8T",
+                                 "c19_CD8_Tem_CMC1" = "CD8T",
+                                 "c20_CD8_Tem_GZMK" = "CD8T",
+                                 "c21_CD8_Trm_XCL1" = "CD8T",
+                                 "c22_CD8_Trm_HSPA1B" = "CD8T",
+                                 "c23_CD8_Tex_LAYN" = "CD8T",
+                                 "c24_CD8_Temra_CX3CR1" = "CD8T",
+                                 "c25_CD8_Temra_TYROBP" = "CD8T",
+                                 "c26_CD8_MAIT_KLRB1" = "CD8T",
+                                 "c27_CD8_MAIT_SLC4A10" = "CD8T",
+                                 "c28_CD8_IEL_CD160" = "CD8T",
+                                 "c33_ILC_GZMK" = "NKcell",
+                                 "c34_ILC_NR4A2" = "NKcell",
+                                 "c35_ILC_FCGR3A" = "NKcell",
+                                 "c36_ILC_SYNE2" = "NKcell",
+                                 "c37_ILC_SLC4A10" = "NKcell",
+                                 "c38_ILC_MKI67" = "NKcell",
+                                 "c39_NaiveB_TCL1A" = "Bcell",
+                                 "c40_NaiveB_IGHD" = "Bcell",
+                                 "c41_MemB_CD27" = "Bcell",
+                                 "c42_MemB_GPR183" = "Bcell",
+                                 "c43_GCB_LRMP" = "Bcell",
+                                 "c44_GCB_MKI67" = "Bcell",
+                                 "c45_PlasmaB_TXNDC5" = "Plasma",
+                                 "c46_PlasmaB_IGHA1" = "Plasma",
+                                 "c47_PlasmaB_IGHG1" = "Plasma",
+                                 "c48_PlasmaB_MKI67" = "Plasma",
+                                 "c49_Mono_CD14" = "Mono",
+                                 "c50_Mono_FCGR3A" = "Mono",
+                                 "c51_Mono_NFKBIZ" = "Mono",
+                                 "c52_Mast_TPSAB1" = "MAST",
+                                 "c53_Neu_CXCR2" = "Neutrophil",
+                                 "c54_pDC_LILRA4" = "DC",
+                                 "c55_pDC_GZMB" = "DC",
+                                 "c56_tDC_SIGLEC6" = "DC",
+                                 "c57_cDC_CLEC9A" = "DC",
+                                 "c58_cDC_CD1C" = "DC",
+                                 "c59_cDC_IL1B" = "DC",
+                                 "c60_cDC_LAMP3" = "DC",
+                                 "c61_Mph_FCGR3A" = "Macro",
+                                 "c62_Mph_S100A8" = "Macro",
+                                 "c63_Mph_CCL20" = "Macro",
+                                 "c64_Mph_SPP1" = "Macro",
+                                 "c65_Mph_APOE" = "Macro",
+                                 "c66_Endo_LYVE1" = "Endothelial",
+                                 "c67_Endo_ACKR1" = "Endothelial",
+                                 "c68_Endo_FABP5" = "Endothelial",
+                                 "c69_Endo_CXCL12" = "Endothelial",
+                                 "c70_Endo_COL4A1" = "Endothelial",
+                                 "c71_Endo_MKI67" = "Endothelial",
+                                 "c72_Fibro_SOX6" = "Fibroblast",
+                                 "c73_Fibro_ADAMDEC1" = "Fibroblast",
+                                 "c74_Fibro_C7" = "Fibroblast",
+                                 "c75_Fibro_CCL19" = "Fibroblast",
+                                 "c76_Fibro_PI16" = "Fibroblast",
+                                 "c77_Fibro_ACTA2" = "Fibroblast",
+                                 "c78_Fibro_DES" = "Fibroblast",
+                                 "c79_Fibro_FAP" = "Fibroblast",
+                                 "c80_Fibro_MKI67" = "Fibroblast"))
+table(datafilt$celltype_major)
+
+## Mast 降维聚类注释
+
+celltypes <- c("MAST")
+
+Mast <- subset(datafilt, subset = celltype_major %in% celltypes)
+
+nfeatures = 2000
+ndim = 15
+neigh = 75
+dist = 0.5
+res = 0.2
+
+Mast <- NormalizeData(Mast, scale.factor = 10000,
+                      normalization.method = "LogNormalize")
+
+Mast <- FindVariableFeatures(Mast, nfeatures = nfeatures, 
+                             selection.method = "vst")
+
+Mast <- ScaleData(Mast, features = VariableFeatures(Mast))
+
+Mast <- RunPCA(Mast, assay = 'RNA', slot = 'scale.data')
+
+Mast <- RunHarmony(Mast, group.by.vars = "sample",dims.use = 1:50,
+                   assay.use = "RNA")
+
+Mast <- FindNeighbors(Mast, k.param = neigh,
+                      dims = 1:ndim, reduction = "harmony")
+
+Mast <- FindClusters(Mast, resolution = 0.4, n.iter = 50)
+
+Mast <- RunUMAP(Mast, dims = 1:ndim,
+                n.neighbors = neigh, min.dist = dist, 
+                reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = Mast,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+Mast <- subset(Mast, idents = c(0:5))
+
+Mast <- FindNeighbors(Mast, k.param = neigh,
+                      dims = 1:ndim, reduction = "harmony")
+
+Mast <- FindClusters(Mast, resolution = 0.4, n.iter = 50)
+
+Mast <- RunUMAP(Mast, dims = 1:ndim,
+                n.neighbors = neigh, min.dist = dist, 
+                reduction = "harmony", reduction.name = "umap_harmony")
+
+plot <- dimplot_new(data = Mast,
+                    reduction = "umap_harmony",
+                    pt.size = 1, label = F,
+                    group.by = c("seurat_clusters"))
+plot
+
+saveRDS(Mast, file = "~/Steven Lijiajun/Pancancer ICB B cell atlas/analyses/10_Mast cell atlas/GSE236581/Mast6.rds")

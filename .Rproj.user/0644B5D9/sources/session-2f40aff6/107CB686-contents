@@ -1,0 +1,662 @@
+
+# limma差异分析 ====================
+
+difflimma <- function(data = data,
+                      info = info,
+                      group1 = "R",
+                      group2 = "NR",
+                      filter = FALSE) {
+  
+  # 默认情况都是group1 - group2
+  
+  library(limma)
+  library(metaMA)
+  library(statmod)
+  
+  data <- data.frame(data)
+  
+  # 确保排序一致
+  
+  common <- intersect(colnames(data), info$id)
+  info <- info[info$id %in% common,]
+  data <- data[,info$id]
+  data <- as.matrix(data)
+  
+  # 排除变异度小的基因
+  
+  var <- do.call(rbind, lapply(rownames(data), function(i){
+    data.frame(id = i, value = var(data[i,]))}))
+  data <- data[var$id[var$value > 0],]
+  
+  # 构建矩阵
+  
+  grade <- factor(info[,2], levels = c(group2, group1))
+  design <- model.matrix(~0 + grade)
+  
+  rownames(design) <- info$id
+  colnames(design) <- gsub(pattern = "grade", replacement = "",
+                           x = colnames(design))
+  # 对比矩阵
+  
+  cont.matrix <- as.matrix(c(-1, 1))
+  rownames(cont.matrix) <- c(group2, group1)
+  colnames(cont.matrix) <- paste0(group1, " - ", group2)
+  
+  # 线性拟合
+  
+  fit <- lmFit(data, design)
+  fit <- contrasts.fit(fit, cont.matrix)
+  fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+  
+  # 得到差异基因
+  
+  diff <- topTable(fit, adjust = 'fdr',
+                   coef = 1, n = Inf)
+  
+  diff <- data.frame(id = rownames(diff),
+                     logfc = diff$logFC,
+                     t = diff$t,
+                     pvalue = diff$P.Value,
+                     FDR = diff$adj.P.Val)
+  
+  # 得到分组平均值
+  
+  group_mean <- do.call(rbind, lapply(1:nrow(data), function(i){
+    
+    input <- data.frame(id = colnames(data), value = data[i,])
+    input <- merge(input, info, by = "id")
+    input <- na.omit(input)
+    
+    cohen <- (mean(input$value[input$type == group1]) - 
+                mean(input$value[input$type == group2])) / sd(input$value)
+    
+    data.frame(id = rownames(data)[i],
+               mean_G1 = mean(input$value[input$type == group1]),
+               mean_G2 = mean(input$value[input$type == group2]),
+               cohen = cohen)
+  }))
+  
+  colnames(group_mean)[2:3] <- c(group1, group2)
+  
+  # 整合平均值结果
+  
+  diff <- merge(group_mean, diff, by = "id")
+  
+  # 得到moderated effect size
+  
+  es <- effectsize(fit$t, nrow(info),
+                   (fit$df.prior + fit$df.residual))
+  
+  es <- data.frame(es = es[,"dprime"],
+                   es_var = es[,"vardprime"])
+  # 结果总结
+  
+  es <- es[diff$id,]
+  es <- cbind(diff, es)
+  rownames(es) <- NULL
+  es
+}
+
+
+# GSEA分析 ====================
+
+gsea_analysis <- function(input = input,
+                          source = path,
+                          geneset = NULL,
+                          set.min = 5,
+                          set.max = 1000) {
+  
+  library(clusterProfiler)
+  library(enrichplot)
+  library(gridExtra)
+  library(msigdbr)
+  options(connectionObserver = NULL)
+  
+  # 处理注释信息
+  
+  if (is.null(geneset)) {
+    
+    if (is.data.frame(source)) {
+      
+      sig_list = source
+      
+    } else {
+      
+      sig_list <- read.table(source, sep = ",", header = F,
+                             row.names = 1, na.strings = "")
+      
+      sig_list <- lapply(rownames(sig_list), function(i){
+        subdata <- t(sig_list[i,])[,1]
+        subdata <- data.frame(term = i, gene = subdata)
+      })
+      
+      sig_list <- do.call(rbind, sig_list)
+      sig_list <- na.omit(sig_list)
+      
+    }
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- data.frame(term = genesets[,2], gene = genesets[,1])
+    
+  }
+  
+  # 整理数据
+  
+  input <- input[order(input$value, decreasing = T),]
+  data <- input$value
+  names(data) <- input$id
+  
+  # 开始进行GSEA分析
+  
+  kk <- GSEA(data, TERM2GENE = sig_list,
+             minGSSize = set.min, maxGSSize = set.max,
+             pvalueCutoff = 1, nPermSimple = 10000, eps = 0)
+  
+  # 结果整理
+  
+  result <- data.frame(id = kk$Description, 
+                       ES = kk$enrichmentScore,
+                       NES = kk$NES, 
+                       pvalue = kk$pvalue, 
+                       FDR = kk$p.adjust, 
+                       setsize = kk$setSize, 
+                       leading_prop = kk$leading_edge,
+                       leading_gene = kk$core_enrichment)
+  
+  result$leading_prop <- do.call(rbind, strsplit(result$leading_prop, ','))[,1]
+  result$leading_prop <- do.call(rbind, strsplit(result$leading_prop, '='))[,2]
+  
+  # 结果输出
+  
+  result <- result[order(result$NES, decreasing = T),]
+  result
+}
+
+
+# 进行leading edge分析 ====================
+
+leading_edge <- function(input = input,
+                         geneset = list) {
+  library(Pi)
+  library(tibble)
+  
+  # 数据排序
+  
+  input <- input[order(input$value, decreasing = T),]
+  
+  # 整理数据
+  
+  rownames(input) <- NULL
+  input <- column_to_rownames(input, var = "id")
+  input$rank <- 1:nrow(input)
+  names(input)[1] <- "priority"
+  
+  # 开始分析
+  
+  eGSEA <- xPierGSEA(input, fast = T,
+                     size.range = c(5, 500),
+                     nperm = 1000, 
+                     customised.genesets = geneset)
+  # 导出结果
+  
+  result <- data.frame(rank = eGSEA[["leading"]][[1]])
+  result <- rownames_to_column(result, var = "id")
+  result
+}
+
+
+# 画leading edge plot ====================
+
+leading_edge_plot <- function(input = input,
+                              geneset = list,
+                              leading = TRUE,
+                              select.gene = FALSE,
+                              select.name = select) {
+  library(Pi)
+  library(tibble)
+  
+  # 数据排序
+  
+  input <- input[order(input$value, decreasing = T),]
+  
+  # 整理数据
+  
+  rownames(input) <- NULL
+  input <- column_to_rownames(input, var = "id")
+  input$rank <- 1:nrow(input)
+  names(input)[1] <- "priority"
+  
+  # 开始分析
+  
+  eGSEA <- xPierGSEA(input, fast = T,
+                     size.range = c(5, 500),
+                     nperm = 1000, 
+                     customised.genesets = geneset)
+  
+  # 设定颜色
+  
+  col <- "#343391-#343391-#343391-#00b6db-#8dcb8a-#f6bd25-#ea5c2e-#8b2a21-#8b2a21-#8b2a21"
+  # col <- "#f3bd2e-#f3bd2e-#f3bd2e-#e2720f-#e02f2c-#861b20-#b51b7f-#7f137f-#622183-#622183-#622183"
+  
+  # 开始画图
+  
+  if (select.gene == TRUE) {
+    
+    plot <- xGSEAdotplot(eGSEA, top = names(geneset),
+                         peak.color = "black",
+                         leading = leading,
+                         leading.query = select.name,
+                         leading.query.only = TRUE,
+                         leading.size = 3,
+                         leading.color = "black",
+                         leading.alpha = 1,
+                         colormap = col,
+                         ncolors = 6)
+    plot
+    
+  } else {
+    
+    plot <- xGSEAdotplot(eGSEA, top = names(geneset),
+                         peak.color = "black",
+                         leading = leading,
+                         leading.query.only = TRUE,
+                         leading.size = 3,
+                         leading.color = "black",
+                         leading.alpha = 1,
+                         colormap = col,
+                         ncolors = 6)
+    plot
+  }
+}
+
+
+# GSEA富集图 ====================
+
+gsea_barcode <- function(input = input,
+                         source = path,
+                         geneset = NULL,
+                         select = "name") {
+  
+  # ggplot2的版本是3.4.0
+  # https://github.com/NicolasH2/gggsea#Customization
+  
+  # 封装函数1 ------------------------------
+  
+  geom_gsea <- function(
+    df, labelsize=4, zeroline=F, prettyGSEA=T, ncol=NULL, nrow=NULL,
+    linecolor="green", linesize=1,
+    tickcolor="black", ticksize=0.5,
+    zerocolor="black", zerosize=0.5, zerotype="dashed",
+    ...
+  ){
+    
+    nsets <- length(unique(df$set)) 
+    linecolor <- rep(rep(linecolor, nsets)[1:nsets], each=nrow(df)/nsets) 
+    linesize <- rep(rep(linesize, nsets)[1:nsets], each=nrow(df)/nsets)
+    
+    nticks <- unlist( lapply(unique(df$set), function(x) nrow(df[df$set %in% x & !is.na(df$y1ticks),])) )
+    tickcolor <- rep(rep(tickcolor, nsets)[1:nsets], nticks) 
+    ticksize <- rep(rep(ticksize, nsets)[1:nsets], nticks)
+    
+    gseaLine <- geom_gseaLine(df, color=linecolor, size=linesize, ...)
+    ticks <- geom_gseaTicks(df[!is.na(df$y1ticks), ], color=tickcolor, size=ticksize, ...)
+    gradient <- geom_gseaGradient(df[!is.na(df$y1gradient), ], ...)
+    statistics <- ggplot2::geom_label(data=df[!is.na(df$stattext),],
+                                      mapping = aes(x, ystat, label=stattext ),
+                                      size=labelsize, hjust=0, vjust=0 , parse=T, alpha=.7, fill="white")
+    
+    main <- list(gseaLine, ticks, gradient, statistics,
+                 ggplot2::facet_wrap(~set, scale="free_y", ncol=ncol, nrow=nrow)
+    )
+    if(zeroline){
+      xmid <-
+        main <- c(
+          ggplot2::geom_segment(mapping=ggplot2::aes(x=zeroline, xend=zeroline, y=bottomline, yend=Inf),
+                                data=df[!duplicated(df$set),],
+                                color=zerocolor, size=zerosize, linetype=zerotype),
+          main)
+    }
+    
+    if(prettyGSEA){
+      
+      break_fun <- function(y){
+        maxY <- max(y) 
+        minY <- min(y)
+        sizeFactor <- abs(maxY-minY)
+        minY <- minY + sizeFactor * 0.22
+        ystepsize <- signif(sizeFactor/4, digits=1) 
+        
+        nDown <- ceiling(minY / ystepsize) 
+        nUp <- round(maxY / ystepsize) 
+        breaks <- c(
+          seq(from = nDown * ystepsize, to = 0, by = ystepsize),
+          seq(from = 0, to = nUp * ystepsize,    by = ystepsize)
+        )
+        return(breaks)
+      }
+      main <- c(list(
+        geom_hline( mapping = aes(yintercept=bottomline), data = df[!duplicated(df$set),] ),
+        geom_hline(yintercept=0),
+        labs(x="rank", y="enrichment score"),
+        scale_y_continuous(breaks=break_fun),
+        main
+      ))
+    }
+    return( main )
+  }
+  
+  # 封装函数2 ------------------------------
+  
+  geom_gseaLine <- function(df, ...){
+    
+    gseaLine <- ggplot2::layer(
+      data = df,
+      mapping = ggplot2::aes(x=x, y=y),
+      geom = "path",
+      stat = "identity",
+      position = "identity",
+      show.legend = FALSE,
+      inherit.aes = TRUE,
+      params=list(lineend="round", ...)
+    )
+    userInput <- names(as.list(match.call())) #get all parameters set by the user
+    if(!any(c("color","colour") %in% userInput)) gseaLine$aes_params[["colour"]] <- "green"
+    if(!"size" %in% userInput) gseaLine$aes_params[["size"]] <- 1
+    
+    return(gseaLine)
+  }
+  
+  # 封装函数3 ------------------------------
+  
+  geom_gseaTicks <- function(df, ...){
+    
+    gseaTicks <- ggplot2::layer(
+      data = df,
+      mapping = ggplot2::aes(x=x, y=y1ticks, xend=x, yend=y2ticks),
+      geom = "segment",
+      stat = "identity",
+      position = "identity",
+      show.legend = FALSE,
+      inherit.aes = TRUE,
+      params=list(...)
+    )
+    userInput <- names(as.list(match.call())) #get all parameters set by the user
+    if(!"size" %in% userInput) gseaTicks$aes_params[["size"]] <- 0.2
+    
+    return(gseaTicks)
+  }
+  
+  # 封装函数4 ------------------------------
+  
+  gseaCurve <- function(rl, setlist, gsea=NULL, weight=1){
+    
+    dfList <- mapply(function(set, setname){
+      if( sum(set %in% names(rl))==0 ) stop("None of the genes in the ranked list are present in the set.")
+      
+      set <- set[set %in% names(rl)]
+      
+      presence <- rep(0,length(rl))
+      positions <- which(names(rl) %in% set)
+      presence[positions] <- abs(rl[positions])^weight
+      
+      absence <- rep(1,length(rl))
+      absence[positions] <- 0
+      
+      cumPresence <- cumsum(presence)
+      relPresence <- sapply(cumPresence, function(x) x/max(cumPresence)) 
+      relAbsence <- cumsum(absence) / (length(rl) - length(set))
+      
+      es <- relPresence-relAbsence 
+      xcoord <- seq_along(es)
+      
+      df <- data.frame(x = c(0,xcoord), y = c(0,es), set = setname, gene=c(0, names(rl)) )
+      
+      maxES <- max(df$y)
+      minES <- min(df$y)
+      sizeFactor <- abs(maxES - minES)
+      lowestPoint <- minES - sizeFactor / 30
+      df$bottomline <- lowestPoint
+      df$zeroline <- median(which(rl==sort(abs(rl))[1]))
+      
+      statdf <- data.frame(x = 0,
+                           ystat = lowestPoint+sizeFactor*.02,
+                           stattext = NA )
+      
+      if(!is.null(gsea)){
+        subgsea <- gsea[gsea$pathway %in% setname,]
+        statdf$stattext = paste0("atop(italic(NES)==",as.character(round(subgsea$NES, 2)),
+                                 ",italic(p)==",      as.character(round(subgsea$pval,4)),")")
+      }
+      df <- merge(df, statdf, by="x", all=T) 
+      
+      df <- merge(df, .presenceTicks(rl, set, lowestPoint, sizeFactor), by="x", all=TRUE)
+      lowestPoint <- min(df$y2ticks, na.rm=TRUE) 
+      
+      df <- merge(df, .colorGradient(rl, lowestPoint, sizeFactor), by="x", all=TRUE)
+      return(df)
+      
+    }, set=setlist, setname=names(setlist), SIMPLIFY=FALSE)
+    df <- do.call(rbind, dfList)
+    return(df)
+  }
+  
+  .presenceTicks <- function(rl, set, lowestPoint, sizeFactor){
+    
+    ticks <- data.frame(x = which(names(rl) %in% set),
+                        y1ticks = lowestPoint - sizeFactor / 40,
+                        y2ticks = lowestPoint - sizeFactor / 8,
+                        hitgene = names(rl[names(rl) %in% set]))
+    return(ticks)
+  }
+  
+  .colorGradient <- function(rl, lowestPoint, sizeFactor, lowcol="blue", midcol="white", highcol="red", resolution=20){
+    
+    gradient <- unlist(lapply(seq(0,1,length.out=resolution/2+1), function(x) dplyr::nth(sort(abs(rl)), as.integer(length(rl)*x)) ))
+    gradient <- gradient[-1]
+    gradient <- sort(c(gradient,-gradient))
+    gradient <- data.frame(valueMax=gradient[-1])
+    
+    colfunc1 <- grDevices::colorRampPalette(c(highcol, midcol)) 
+    colfunc2 <- grDevices::colorRampPalette(c(midcol, lowcol))
+    gradient$color <- c(colfunc1(resolution/2), colfunc2(resolution/2)[-1])
+    
+    gradient$x <- sapply( gradient$valueMax, function(x) sum(rl <= x) )
+    gradient <- gradient[!duplicated(gradient$x),]
+    gradient$xGradientStart <- c( 1, gradient$x[-nrow(gradient)] )
+    
+    gradient$y1gradient <- lowestPoint
+    gradient$y2gradient <- lowestPoint - sizeFactor / 8
+    return(gradient)
+  }
+  
+  
+  # 开始画图 ------------------------------
+  
+  library(clusterProfiler)
+  library(ggplot2)
+  library(aplot)
+  
+  # 处理注释信息
+  
+  if (is.null(geneset)) {
+    
+    if (is.null(select)) {
+      
+      sig_list = source
+      
+      # 选择geneset
+      
+      geneset <- list(sig_list$gene)
+      names(geneset) <- unique(sig_list$term)
+      
+    } else {
+      
+      sig_list <- read.table(source, sep = ",", header = F,
+                             row.names = 1, na.strings = "")
+      
+      sig_list <- lapply(rownames(sig_list), function(i){
+        subdata <- t(sig_list[i,])[,1]
+        subdata <- data.frame(term = i, gene = subdata)
+      })
+      
+      sig_list <- do.call(rbind, sig_list)
+      sig_list <- na.omit(sig_list)
+      
+      # 选择geneset
+      
+      geneset <- list(sig_list$gene[sig_list$term == select])
+      names(geneset) <- select
+    }
+    
+  } else {
+    
+    all_genesets <- readRDS(source)
+    genesets <- reshape2::melt(all_genesets[[geneset]])
+    sig_list <- data.frame(term = genesets[,2], gene = genesets[,1])
+    
+    # 选择geneset
+    
+    geneset <- list(sig_list$gene[sig_list$term == select])
+    names(geneset) <- select
+  }
+  
+  # 整理数据
+  
+  input <- input[order(input$value, decreasing = T),]
+  data <- input$value
+  names(data) <- input$id
+  
+  # 进行GSEA分析
+  
+  gsea <- gseaCurve(data, geneset)
+  
+  # 计算ES和pvalue
+  
+  geneset <- data.frame(term = names(geneset), gene = geneset[[1]])
+  stat <- GSEA(data, TERM2GENE = geneset,
+               minGSSize = 1, maxGSSize = 5000,
+               nPermSimple = 10000,
+               pvalueCutoff = 1)
+  
+  NES <- stat$NES
+  pvalue <- stat$p.adjust
+  
+  # 注释文字
+  
+  label <- paste0("NES: ", round(NES, 2), "; ", "Adjust P: ", round(pvalue, 5))
+  
+  # 画line plot
+  
+  p1 <- ggplot() + geom_gseaLine(gsea, color= "black", size = 0.5) + 
+    geom_hline(yintercept = 0, color = "grey20",
+               linetype = "dashed") + 
+    
+    annotate(geom = "text", x = -Inf, y = -Inf,
+             hjust = -0.1, vjust = -1.5, size = 5, label = label) + 
+    
+    theme_classic() +
+    theme(axis.title.x = element_blank(),
+          panel.grid = element_blank(), 
+          axis.ticks.x = element_blank(), 
+          axis.text.x = element_blank(),
+          axis.text = element_text(colour = "black", size = 15),
+          axis.title = element_text(colour = "black", size = 15),
+          plot.title = element_text(size = 16)) + 
+    
+    scale_x_continuous(expand = c(0,0)) + # 不留边框
+    scale_y_continuous(expand = c(0.03,0.03)) + 
+    labs(y = "ES") + ggtitle(unique(geneset[,1]))
+  
+  # 画barcode plot
+  
+  p2 <- ggplot() + geom_gseaTicks(gsea, color= "#F9FB0E", size = 0.5) +
+    
+    theme_bw() +
+    theme(panel.background = element_rect(fill = "#352A87",
+                                          colour = "#352A87",
+                                          size = 0.5, linetype = "solid"),
+          axis.title = element_blank(),
+          panel.grid = element_blank(), # 删去网格线
+          axis.ticks = element_blank(), # 删去刻度线
+          axis.text = element_blank()) + # 删去刻度标签
+    
+    scale_x_continuous(expand = c(0,0)) + # 不留边框
+    scale_y_continuous(expand = c(0,0))
+  
+  # 组合图形
+  
+  p1 %>% 
+    insert_bottom(p2, height = 0.7)
+}
+
+
+
+# GSEA棒棒糖图 ====================
+
+lollipop_plot <- function(input = input) {
+  
+  library(ggplot2)
+  library(forcats)
+  
+  # 预处理数据
+  
+  input <- data.frame(id = input$id,
+                      NES = input$NES,
+                      pvalue = input$FDR)
+  
+  input$pvalue <- -log10(input$pvalue)
+  input <- input[order(input$NES),]
+  input$id <- fct_inorder(input$id)
+  
+  # 开始画图
+  
+  ggplot(input, aes(x = id, y = NES, size = pvalue)) +
+    geom_segment(aes(x = id, xend = id, y = 0, yend = NES),
+                 linewidth = 0.75, color = "grey90") +
+    geom_point(aes(color = NES)) + 
+    geom_hline(yintercept = 0, color = "grey20") + 
+    coord_flip() +  # 翻转坐标轴
+    scale_color_gradient2(low = "#0070b2", high = "#da1735", mid = "white", midpoint = 0) +
+    theme_bw() + 
+    theme(panel.grid = element_blank(),
+          axis.text = element_text(colour = "black", size = 12),
+          axis.title = element_text(colour = "black", size = 12),
+          panel.border = element_rect(fill = NA, color = "black", linewidth = 1)) + 
+    labs(x = "",y = "Normalized Enrichment Score (NES)", size = "-log10(P-value)")
+}
+
+
+
+# 替换矩阵名字 ====================
+
+matrix_rowname_replace <- function(data = data,
+                                   info = info,
+                                   rm.uncommon = TRUE) {
+  library(data.table)
+  library(tibble)
+  library(plyr)
+  
+  # info重命名
+  
+  names(info)[1:2] <- c("rowname", "newname")
+  info <- na.omit(info)
+  
+  # 取交集
+  
+  if (rm.uncommon == TRUE) {
+    common <- intersect(rownames(data), info$rowname)
+    data <- data[rownames(data) %in% common,]
+    info <- info[info$rowname %in% common,]
+  }
+  
+  # 开始替换
+  
+  rownames(data) <- mapvalues(rownames(data),
+                              as.character(info$rowname),
+                              as.character(info$newname))
+  data
+}
+

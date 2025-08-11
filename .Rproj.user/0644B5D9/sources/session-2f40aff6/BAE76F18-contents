@@ -1,0 +1,301 @@
+library(NMF)
+library(Seurat)
+library(plyr)
+library(dplyr)
+library(future)
+library(gtools)
+library(ggplot2)
+library(cowplot)
+library(data.table)
+library(tidyverse)
+library(future.apply)
+library(RColorBrewer)
+
+
+source("/home/ug0302/CITEseq/public_data/citeseq_function.R")
+setwd("/home/ug0302/CITEseq")
+load("savedata/data1.Rdata")
+load("savedata/data2.Rdata")
+load("savedata/viper_results.Rdata")
+load("savedata/nmf_results.Rdata")
+
+
+# NMF分析 ======================================================================
+
+# 生成NMF输入数据 --------------------
+
+nmf_input <- lapply(allexpmc, function(i){
+  
+  data <- NormalizeData(i)
+  data <- FindVariableFeatures(data, nfeatures = 5000)
+  data <- ScaleData(data, do.center = F)
+  
+  as.matrix(GetAssayData(data,
+            slot = "scale.data", assay = "RNA"))
+})
+
+
+# NMF program --------------------
+
+allnmf_integ <- consensus_nmf(nmf_input,
+                              topnumber = 150,
+                              knumber = 5:10,
+                              thres_freq = 2,
+                              thres_cor = 0.8, 
+                              ncore = length(nmf_input))
+
+# 保存结果 --------------------
+
+name = "/home/ug0302/CITEseq/savedata/nmf_results.Rdata"
+save(allnmf_integ, file = name)
+
+
+
+# NMF - umap可视化 =============================================================
+
+# 提取NMF数据
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# program featureplot 可视化 --------------------
+
+nulldata <- lapply(names(allexpmc), function(i){
+  
+  subexp <- allexpmc[[i]]
+  subnmf <- allnmf[[i]]
+  
+  subexp <- AddMetaData(subexp, subnmf)
+  feature <- colnames(subnmf)
+  
+  all_plots <- featureplot_new(data = subexp, pt.size = 2,
+                               reduction = "wnn", color = "blue2red",
+                               features = feature)
+  
+  name = paste0("figure/05_nmf/wnn_nmf_", i, ".png")
+  export_featureplot(all_plots = all_plots,
+                     ncol = 5, dpi = 300, output = name)
+})
+
+
+# nmf结果多分类可视化 --------------------
+
+all_plots <- lapply(names(allexpmc), function(i){
+  
+  subexp <- allexpmc[[i]]
+  subnmf <- allnmf[[i]]
+  
+  nmfclass <- nmf_multi_cluster(subnmf, thres = 0.75)
+  subexp <- AddMetaData(subexp, nmfclass)
+  
+  dimplot_new(subexp, pt.size = 1.5, reduction = "wnn",
+              label = F, group.by = c("nmfclass")) + ggtitle(i)
+})
+
+name = "figure/05_nmf/wnn_nmfclass_sep.png"
+export_dimplot(all_plots = all_plots,
+               ncol = 2, dpi = 300, output = name)
+
+
+# nmf结果二分类可视化 --------------------
+
+select <- c("R4_HC005", "R7_HC006", "R1_HC007", "R5_HUH7")
+
+# 开始可视化
+
+all_plots <- lapply(names(allexpmc), function(i){
+  
+  subexp <- allexpmc[[i]]
+  subnmf <- allnmf[[i]]
+  
+  nmfclass <- nmf_dicho_cluster(subnmf, thres = 0.75,
+                                stem.select = select,
+                                cluster.name = "stem")
+  
+  subexp <- AddMetaData(subexp, nmfclass)
+  dimplot_new(subexp, pt.size = 1.5, reduction = "wnn",
+              label = F, group.by = c("nmfclass")) + ggtitle(i)
+})
+
+name = "figure/05_nmf/wnn_nmfclass_stem_sep.png"
+export_dimplot(all_plots = all_plots,
+               ncol = 2, dpi = 300, output = name)
+
+
+
+# NMF - signature 相关性 =======================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# signature score --------------------
+
+path = "/home/ug0302/CITEseq/public_data/tumor_sig5.csv"
+
+allsig <- lapply(allexpmc, function(i){
+  seurat_score(i, source = path)
+})
+
+
+# 相关性计算 --------------------
+
+allcor <- lapply(names(allnmf), function(i){
+  
+  subsig <- allsig[[i]]
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subsig),]
+  cor_betweenAB(subnmf, subsig)
+})
+
+names(allcor) <- names(allnmf)
+
+
+# 热图可视化 --------------------
+
+for (i in names(allcor)) {
+  input <- allcor[[i]]
+  
+  # 画图并导出
+  
+  name = paste0("figure/05_nmf/heatmap_cor_nmf_sig_", i, ".pdf")
+  pdf(file = name, width = 8, height = 7)
+  print(heatmap_text(input = input, col_rot = 90, 
+                     color = "blue2red", cutoff = 0.05,
+                     order_name = F, cluster_row = T, cluster_col = F))
+  dev.off()
+}
+
+
+
+# NMF - protein 相关性 =========================================================
+
+# 所有样本合并做 ====================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 相关性计算 ----------
+
+allcor <- do.call(cbind, lapply(names(allnmf), function(i){
+  
+  subpro <- allpromc[[i]]
+  subpro <- t(GetAssayData(subpro, slot = "data"))[,select_pro]
+  
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subpro),]
+  cor_betweenAB(subnmf, subpro)
+}))
+
+# 热图可视化 ----------
+
+pdf(file = "figure/05_nmf2/heatmap_allcor_nmf_pro.pdf",
+    width = 7, height = 20)
+
+heatmap_cor(t(allcor), color = "blue2red",
+            rev.col = FALSE, show.name = TRUE)
+dev.off()
+
+
+# 每个样本单独做 ====================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 相关性计算 ----------
+
+allcor <- lapply(names(allnmf), function(i){
+  
+  subpro <- allpromc[[i]]
+  subpro <- t(GetAssayData(subpro, slot = "data"))
+  
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subpro),]
+  cor_betweenAB(subnmf, subpro)
+})
+
+names(allcor) <- names(allnmf)
+
+# 热图可视化 ----------
+
+for (i in names(allcor)) {
+  input <- allcor[[i]]
+  
+  # 画图并导出
+  
+  name = paste0("figure/05_nmf/heatmap_cor_nmf_pro_", i, ".pdf")
+  pdf(file = name, width = 5, height = 7)
+  print(heatmap_text(input = input, col_rot = 90, 
+                     color = "blue2red", cutoff = 0.05,
+                     order_name = F, cluster_row = T, cluster_col = F))
+  dev.off()
+}
+
+
+
+# NMF - viper 相关性 ===========================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+
+# 选择基因 --------------------
+
+select <- read.table("public_data/CSC_TF.txt", sep = "\t", header = T)
+select <- select[,1]
+
+
+# 相关性计算 --------------------
+
+allcor <- lapply(names(allnmf), function(i){
+  
+  subvip <- allvipmc[[i]]
+  subvip <- t(as.matrix(GetAssayData(subvip, slot = "data")))
+  subvip <- subvip[,colnames(subvip) %in% select]
+  
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(subvip),]
+  cor_betweenAB(subnmf, subvip)
+})
+
+names(allcor) <- names(allnmf)
+
+
+# 热图可视化 --------------------
+
+for (i in names(allcor)) {
+  input <- allcor[[i]]
+  
+  # 画图并导出
+  
+  name = paste0("figure/05_nmf/heatmap_cor_nmf_vip_", i, ".pdf")
+  pdf(file = name, width = 5, height = 7)
+  print(heatmap_text(input = input, col_rot = 90, 
+                     color = "blue2red", cutoff = 0.05,
+                     order_name = F, cluster_row = T, cluster_col = F))
+  dev.off()
+}
+
+
+
+# NMF - cytotrace ==============================================================
+
+allnmf <- do.call(c, lapply(allnmf_integ, function(i){list(i$cell)}))
+names(allnmf) <- names(allnmf_integ)
+
+# 相关性分析
+
+allcor <- do.call(rbind, lapply(names(allnmf), function(i){
+  
+  info <- cytotrace[[i]]
+  subnmf <- allnmf[[i]]
+  subnmf <- subnmf[rownames(info),]
+  
+  # 相关性分析
+  
+  cor <- cor_between_aB(info, subnmf)
+  cor$sample <- i
+  cor
+}))
+

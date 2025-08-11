@@ -1,0 +1,3 @@
+
+res <- nmf(nmf_input$A001_ICC, rank = 5, method="snmf/r") 
+runtime(res)

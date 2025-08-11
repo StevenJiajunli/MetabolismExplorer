@@ -1,0 +1,9 @@
+
+install_dependencies <- function() {
+  if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+  BiocManager::install(c("clusterProfiler", "enrichplot", "org.Hs.eg.db", "msigdbr"))
+}
+
+devtools::install_github("StevenJiajunli/MetabolismExplorer")
+
+library(MetabolismExplorer)
