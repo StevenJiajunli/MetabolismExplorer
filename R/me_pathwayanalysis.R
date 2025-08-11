@@ -30,7 +30,7 @@ me_pathwayanalysis <- function(data = diff,
   all_genesets <- readRDS(rds_path)
 
   # 提取指定的基因集
-  genesets <- melt(all_genesets[[geneset]])
+  genesets <- reshape2::melt(all_genesets[[geneset]])
   sig_list <- data.frame(term = genesets[,2], gene = genesets[,1])
 
   # 整理表达数据
