@@ -22,30 +22,30 @@ me_leading_edge_plot <- function(input = diff,
   input <- data.frame(id = input$id,
                       value = input$logfc)
 
-  # 数据排序
+  # Sort data
 
   input <- input[order(input$value, decreasing = T),]
 
-  # 整理数据
+  # Organize data
 
   rownames(input) <- NULL
   input <- column_to_rownames(input, var = "id")
   input$rank <- 1:nrow(input)
   names(input)[1] <- "priority"
 
-  # 开始分析
+  # Perform analysis
 
   eGSEA <- xPierGSEA(input, fast = T,
                      size.range = c(5, 500),
                      nperm = 1000,
                      customised.genesets = geneset)
 
-  # 设定颜色
+  # Set color palette
 
   col <- "#343391-#343391-#343391-#00b6db-#8dcb8a-#f6bd25-#ea5c2e-#8b2a21-#8b2a21-#8b2a21"
   # col <- "#f3bd2e-#f3bd2e-#f3bd2e-#e2720f-#e02f2c-#861b20-#b51b7f-#7f137f-#622183-#622183-#622183"
 
-  # 开始画图
+  # Plot results
 
   if (select.gene == TRUE) {
 
