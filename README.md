@@ -110,7 +110,7 @@ diff <- me_diffprep(
 )
 
 # Perform metabolism state analysis
-meta <- me_analysis(
+meta <- me_pathwayanalysis(
   input = diff,
   geneset = "metabolite",  # options: subsystem, metabolite
   set.min = 5,
